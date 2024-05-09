@@ -1,0 +1,34 @@
+on:
+  - push
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+        racket-variant: ['BC', 'CS']
+        racket-version: ['8.6', '8.8']
+    name: Test on Racket ${{ matrix.racket-variant }} ${{ matrix.racket-version }} on ${{ matrix.os }}	
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+    - name: Install nasm
+      run: sudo apt-get install nasm
+    - name: Install Racket
+      uses: Bogdanp/setup-racket@v1.10
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        variant: ${{ matrix.racket-variant }}
+        version: ${{ matrix.racket-version }}
+    - name: Version info
+      run: |
+        nasm --version
+        gcc --version
+    - name: Install a86 package
+      run: |
+        raco pkg install a86/
+    - name: Run tests
+      run: |
+        raco test -p a86
