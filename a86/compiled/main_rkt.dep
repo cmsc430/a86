@@ -1,0 +1,1 @@
+("8.6" ta6osx ("a5bd983f1d33696ec13147488c6d4ac129ec495a" . "cad87575a39a2a88c60d1b9844087ee7a2b114bc") (collects #"a86" #"ast.rkt") (collects #"a86" #"interp.rkt") (collects #"a86" #"printer.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))
