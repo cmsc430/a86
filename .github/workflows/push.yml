@@ -31,4 +31,4 @@ jobs:
         raco pkg install a86/
     - name: Run tests
       run: |
-        raco test -p a86
+        xvfb-run raco test -p a86
