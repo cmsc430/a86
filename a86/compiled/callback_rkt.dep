@@ -1,1 +1,0 @@
-("8.6" ta6osx ("9e3987c50326d72827a6ca495b5787e94de6a563" . "61c0e7d0842fc0f1c8d0b3946ad040b34c8d6509") (collects #"ffi" #"unsafe" #"atomic.rkt") (collects #"ffi" #"unsafe.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))

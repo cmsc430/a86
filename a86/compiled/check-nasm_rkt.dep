@@ -1,1 +1,0 @@
-("8.6" ta6osx ("b5eb50c64f2b3f22ec729672c878bd5f37fb963a" . "be5c5f7b26e32839b012f8b9dc659e31fe95d876") (collects #"racket" #"gui" #"dynamic.rkt") (collects #"racket" #"main.rkt") (collects #"racket" #"runtime-config.rkt"))
