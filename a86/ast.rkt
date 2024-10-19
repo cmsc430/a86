@@ -25,7 +25,7 @@
 
 (define check:target
   (λ (a x n)
-    (unless (or (symbol? x) (offset? x)); either register or label
+    (unless (or (symbol? x) (mem? x)); either register or label
       (error n "expects symbol; given ~v" x))
     (values a x)))
 
@@ -33,16 +33,16 @@
   (λ (a a1 a2 n)
     (unless (register? a1)
       (error n "expects register; given ~v" a1))
-    (unless (or (register? a2) (offset? a2))
-      (error n "expects register or offset; given ~v" a2))
+    (unless (or (register? a2) (mem? a2))
+      (error n "expects register or effective address; given ~v" a2))
     (values a a1 a2)))
 
 (define check:arith
   (λ (a a1 a2 n)
     (unless (register? a1)
       (error n "expects register; given ~v" a1))
-    (unless (or (exact-integer? a2) (register? a2) (offset? a2))
-      (error n "expects exact integer, register, or offset; given ~v" a2))
+    (unless (or (exact-integer? a2) (register? a2) (mem? a2))
+      (error n "expects exact integer, register, or effective address; given ~v" a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 32))
       (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-length a2)))
     (values a a1 a2)))
@@ -55,29 +55,29 @@
 
 (define check:src-dest
   (λ (a a1 a2 n)
-    (unless (or (register? a1) (offset? a1))
-      (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2))
-      (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
-    (when (and (offset? a1) (offset? a2))
-      (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
+    (unless (or (register? a1) (mem? a1))
+      (error n "expects register or effective address; given ~v" a1))
+    (unless (or (register? a2) (mem? a2) (exact-integer? a2) (Const? a2))
+      (error n "expects register, effective address, exact integer, or defined constant; given ~v" a2))
+    (when (and (mem? a1) (mem? a2))
+      (error n "cannot use two effective addresses; given ~v, ~v" a1 a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 32))
       (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-length a2)))
-    (when (and (offset? a1) (exact-integer? a2))
-      (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
+    (when (and (mem? a1) (exact-integer? a2))
+      (error n "cannot use an effective address and literal; given ~v, ~v; go through a register instead" a1 a2))
     (values a a1 a2)))
 
 (define check:mov
   (λ (a a1 a2 n)
-    (unless (or (register? a1) (offset? a1))
-      (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2))
-      (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
-    (when (and (offset? a1) (offset? a2))
-      (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
+    (unless (or (register? a1) (mem? a1))
+      (error n "expects register or effective address; given ~v" a1))
+    (unless (or (register? a2) (mem? a2) (exact-integer? a2) (Const? a2))
+      (error n "expects register, effective address, exact integer, or defined constant; given ~v" a2))
+    (when (and (mem? a1) (mem? a2))
+      (error n "cannot use two effective addresses; given ~v, ~v" a1 a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 64))
       (error n "literal must not exceed 64-bits; given ~v (~v bits)" a2 (integer-length a2)))
-    (when (and (offset? a1) (exact-integer? a2))
+    (when (and (mem? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
     (values a a1 a2)))
 
@@ -90,13 +90,11 @@
       (error n "expects exact integer in [0,63]; given ~v" a2))
     (values a a1 a2)))
 
-(define check:offset
-  (λ (a r i n)
-    (unless (or (register? r) (label? r))
-      (error n "expects register or label as first argument; given ~v" r))
-    (unless (exact-integer? i)
-      (error n "expects exact integer as second argument; given ~v" i))
-    (values a r i)))
+(define check:mem
+  (λ (a e n)
+    (unless (exp? e)
+      (error n "expects expression as first argument; given ~v" e))
+    (values a e)))
 
 (define check:push
   (λ (a a1 n)
@@ -108,10 +106,10 @@
 
 (define check:lea
   (λ (a dst x n)
-    (unless (or (register? dst) (offset? dst))
-      (error n "expects register or offset; given ~v" dst))
-    (unless (or (label? x) (offset? x) (exp? x))
-      (error n "expects label, offset, or expression; given ~v" x))
+    (unless (or (register? dst) (mem? dst))
+      (error n "expects register or effective address; given ~v" dst))
+    (unless (or (label? x) (mem? x) (exp? x))
+      (error n "expects label, effective address, or expression; given ~v" x))
     (values a dst x)))
 
 (define check:none
@@ -251,7 +249,7 @@
 (instruct Not    (x)       check:register)
 (instruct Div    (den)     check:register)
 
-(instruct Offset (r i)     check:offset)        ;; May need to make this not an instruction
+(instruct Mem    (e)       check:mem)        ;; May need to make this not an instruction
 (instruct Extern (x)       check:label-symbol)
 
 (instruct Equ    (x v)     check:label-symbol+integer)
@@ -268,16 +266,15 @@
 
 (provide exp?)
 (define (exp? x)
-  (or (Offset? x)
-      (and (Plus? x)
+  (or (and (Plus? x)
            (exp? (Plus-e1 x))
            (exp? (Plus-e2 x)))
       (symbol? x)
       (integer? x)))
 
-(provide offset? register? label? 64-bit-integer? 32-bit-integer?)
+(provide mem? register? label? 64-bit-integer? 32-bit-integer?)
 
-(define offset? Offset?)
+(define mem? Mem?)
 
 (define (register? x)
   (and (memq x '(cl eax rax rbx rcx rdx rbp rsp rsi rdi r8 r9 r10 r11 r12 r13 r14 r15))

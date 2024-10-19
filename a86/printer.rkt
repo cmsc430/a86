@@ -47,10 +47,8 @@
   (define (jump-target->string t)
     (match t
       [(? reg?) (reg->string t)]
-      [(Offset (? reg? r) i)
-       (string-append "[" (reg->string r) " + " (number->string i) "]")]
-      [(Offset (? label? l) i)
-       (string-append "[" (label-symbol->string l) " + " (number->string i) "]")]
+      [(Mem e)
+       (string-append "[" (exp->string e) "]")]
       [_ (label-symbol->string t)]))
 
   ;; Arg -> String
@@ -58,10 +56,8 @@
     (match a
       [(? reg?) (reg->string a)]
       [(? integer?) (number->string a)]
-      [(Offset (? reg? r) i)
-       (string-append "[" (reg->string r) " + " (number->string i) "]")]
-      [(Offset (? label? l) i)
-       (string-append "[" (label-symbol->string l) " + " (number->string i) "]")]
+      [(Mem e)
+       (string-append "[" (exp->string e) "]")]
       [(Const l)
        (symbol->string l)]
       [(? exp?) (exp->string a)]))
@@ -70,6 +66,7 @@
   (define (exp->string e)
     (match e
       [(? integer?) (number->string e)]
+      [(? reg?) (reg->string e)]
       [(Plus e1 e2)
        (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]
       [_ (label-symbol->string e)]))
@@ -240,7 +237,7 @@
        (string-append tab "pushf")]
       [(Popf)
        (string-append tab "popf")]
-      [(Lea d (? offset? x))
+      [(Lea d (? mem? x))
        (string-append tab "lea "
                       (arg->string d) ", "
                       (arg->string x))]
