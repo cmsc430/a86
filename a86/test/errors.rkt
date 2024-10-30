@@ -28,4 +28,10 @@
 (check-not-exn       (thunk (prog (Global 'start) (Label 'start) (Ret))))
 (check-not-exn       (thunk (prog (Label 'start) (Ret) (Global 'start))))
 
-
+;; Check comment escape hatch is closed
+(check-exn exn:fail? (thunk (% "comment\nmov rax 42")))
+(check-exn exn:fail? (thunk (%% "comment\nmov rax 42")))
+(check-exn exn:fail? (thunk (%%% "comment\nmov rax 42")))
+(check-not-exn       (thunk (% "commentmov rax 42")))
+(check-not-exn       (thunk (%% "commentmov rax 42")))
+(check-not-exn       (thunk (%%% "commentmov rax 42")))

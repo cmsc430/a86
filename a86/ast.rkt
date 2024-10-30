@@ -131,6 +131,8 @@
   (λ (s n)
     (unless (string? s)
       (error n "expects string; given ~v" s))
+    (when (string-contains? s "\n")
+      (error n "newlines disallowed in comments; given ~v" s))
     s))
 
 (struct %   Comment () #:transparent)
