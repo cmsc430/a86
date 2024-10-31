@@ -8,20 +8,22 @@
 
 (define check:label-symbol
   (λ (a x n)
-    (when (register? x)
-      (error n "cannot use register as label name; given ~v" x))
-    (unless (symbol? x)
-      (error n "expects symbol; given ~v" x))
-    (unless (label? x)
-      (error n "label names must conform to nasm restrictions"))
-    (values a x)))
+    (match x
+      [(? symbol?)
+       (unless (nasm-label? x)
+         (error n "label names must conform to nasm restrictions"))
+       (values a ($ x))]
+      [($ _)      
+       (values a x)]
+      [_
+       (error n "expects valid label name; given ~v" x)])))
 
 (define check:label-symbol+integer
   (λ (a x c n)
-    (check:label-symbol x n)
+    (let-values ([(a x) (check:label-symbol a x n)])
     (unless (integer? c)
       (error n "expects integer constant; given ~v" c))
-    (values a x c)))
+    (values a x c))))
 
 (define check:target
   (λ (a x n)
@@ -110,9 +112,9 @@
   (λ (a dst x n)
     (unless (or (register? dst) (offset? dst))
       (error n "expects register or offset; given ~v" dst))
-    (unless (or (label? x) (offset? x) (exp? x))
-      (error n "expects label, offset, or expression; given ~v" x))
-    (values a dst x)))
+    (unless (exp? x)
+      (error n "expects memory expression; given ~v" x))
+    (values a dst (exp-normalize x))))
 
 (define check:none
   (λ (a n) (values a)))
@@ -138,6 +140,71 @@
 (struct %   Comment () #:transparent)
 (struct %%  Comment () #:transparent)
 (struct %%% Comment () #:transparent)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Labels
+
+;; See https://github.com/cmsc430/a86/issues/2 for discussion
+
+;; NOTE: this leads to some confusing things, like:
+;; > ($ 'foo)
+;; 'foo
+;; > (symbol? ($ 'foo))
+;; #f
+
+;; Maybe the printer for labels should not do anything special,
+;; only the printer for instructions.
+
+(define (->symbol x)
+  (if (symbol? x) x (vector-ref (struct->vector x) 1)))
+
+;; Exp -> Exp
+(define (exp-normalize x)
+  (match x
+    [($ _) x]
+    [(? register?) x]
+    [(? nasm-label?) ($ x)]
+    [(? integer? i) i]
+    [(Offset _ _) x]
+    [(Plus e1 e2)
+     (Plus (exp-normalize e1)
+           (exp-normalize e2))]))
+
+(struct $ (label)
+  #:transparent
+  #:guard
+  (λ (x n)
+    (unless (symbol? x)
+      (error n "expects symbol; given ~v" x))
+    (unless (nasm-label? x)
+      (error n "label names must conform to nasm restrictions"))
+    (values x))
+
+  #;#;#;#:methods gen:equal+hash
+  [(define equal-proc     
+     (λ (i1 i2 equal?)
+       (equal? (->symbol i1)
+               (->symbol i2))))
+   (define hash-proc  (λ (i hash) (hash (->symbol i))))
+   (define hash2-proc (λ (i hash) (hash (->symbol i))))]
+  #:property prop:custom-print-quotable 'never
+  #;#;#;#:methods gen:custom-write
+  [(define (write-proc label port mode)     
+     (let ([recur (case mode
+                    [(#t) write]
+                    [(#f) display]
+                    [else (lambda (p port) (print p port mode))])])
+       (let ((s (vector-ref (struct->vector label) 1)))
+         (if (register? s)
+             (begin (if (number? mode)
+                        (write-string "($ " port)
+                        (write-string "#(struct:$ " port))
+                    (recur s port)                        
+                    (if (number? mode)
+                        (write-string ")" port)
+                        (write-string ")" port)))
+             (recur s port)))))])
+  
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -274,7 +341,9 @@
       (and (Plus? x)
            (exp? (Plus-e1 x))
            (exp? (Plus-e2 x)))
-      (symbol? x)
+      (register? x)
+      (nasm-label? x)
+      ($? x)
       (integer? x)))
 
 (provide offset? register? label? 64-bit-integer? 32-bit-integer?)
@@ -352,9 +421,10 @@
     [(cons _ asm)
      (label-decls asm)]))
 
-;; Symbol -> Boolean
+;; Any -> Boolean
 (define (nasm-label? s)
-  (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s)))
+  (and (symbol? s)
+       (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s))))
 
 ;; Asm -> (Listof Symbol)
 ;; Compute all uses of label names
