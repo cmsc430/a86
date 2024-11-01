@@ -23,9 +23,29 @@
 (define (asm-string a)
   (with-output-to-string (lambda () (asm-display a))))
 
+;; Instruction -> String
+(define (instruction-name i)
+  (string-downcase (symbol->string (object-name i))))
+
+;; Instruction -> [Listof Arg]
+(define (instruction-args i)
+  (rest (rest (vector->list (struct->vector i)))))
+
+(define tab (make-string 8 #\space))
+
 ;; Asm -> Void
 (define (asm-display a)
   (define external-labels '())
+
+  ;; Instruction -> String
+  (define (common-instruction->string i)
+    (let ((as (instruction-args i)))
+      (string-append tab
+                     (instruction-name i)
+                     (apply string-append
+                            (if (empty? as) "" " ")
+                            (add-between (map exp->string as)
+                                         ", ")))))
 
   ;; Label -> String
   ;; prefix with _ for Mac
@@ -43,14 +63,6 @@
                       (string-append "$" (symbol->string s))))
            (λ (s) (string-append "$" (symbol->string s))))]))
 
-  ;; (U Label Reg) -> String
-  (define (jump-target->string t)
-    (exp->string t))
-
-  ;; Arg -> String
-  (define (arg->string a)
-    (exp->string a))
-
   ;; Exp -> String
   (define (exp->string e)
     (match e
@@ -62,8 +74,6 @@
       [(Plus e1 e2)
        (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]))
 
-  (define tab (make-string 8 #\space))
-
   ;; Instruction -> String
   (define (fancy-instr->string i)
     (let ((s (simple-instr->string i)))
@@ -72,7 +82,6 @@
               (format "~a~a; ~.s" s (make-string (- 40 (string-length s)) #\space) (instruction-annotation i))
               (format "~a ; ~.s" s (instruction-annotation i)))
           s)))
-
 
   ;; Instruction -> String
   (define (simple-instr->string i)
@@ -84,181 +93,19 @@
       [(Global ($ x)) (string-append tab "global " (label-symbol->string x))]
       [(Extern ($ l)) (begin0 (string-append tab "extern " (label-symbol->string l))
                               (set! external-labels (cons l external-labels)))]
-      [(Mov a1 a2)
-       (string-append tab "mov "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Add a1 a2)
-       (string-append tab "add "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Sub a1 a2)
-       (string-append tab "sub "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Cmp a1 a2)
-       (string-append tab "cmp "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Sal a1 a2)
-       (string-append tab "sal "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Sar a1 a2)
-       (string-append tab "sar "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Shl a1 a2)
-       (string-append tab "shl "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Shr a1 a2)
-       (string-append tab "shr "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(And a1 a2)
-       (string-append tab "and "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Or a1 a2)
-       (string-append tab "or "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Xor a1 a2)
-       (string-append tab "xor "
-                      (arg->string a1) ", "
-                      (arg->string a2))]
-      [(Jmp l)
-       (string-append tab "jmp "
-                      (jump-target->string l))]
-      [(Jz l)
-       (string-append tab "jz "
-                      (jump-target->string l))]
-      [(Jnz l)
-       (string-append tab "jnz "
-                      (jump-target->string l))]
-      [(Je l)
-       (string-append tab "je "
-                      (jump-target->string l))]
-      [(Jne l)
-       (string-append tab "jne "
-                      (jump-target->string l))]
-      [(Jl l)
-       (string-append tab "jl "
-                      (jump-target->string l))]
-      [(Jle l)
-       (string-append tab "jle "
-                      (jump-target->string l))]
-      [(Jg l)
-       (string-append tab "jg "
-                      (jump-target->string l))]
-      [(Jge l)
-       (string-append tab "jge "
-                      (jump-target->string l))]
-      [(Jo l)
-       (string-append tab "jo "
-                      (jump-target->string l))]
-      [(Jno l)
-       (string-append tab "jno "
-                      (jump-target->string l))]
-      [(Jc l)
-       (string-append tab "jc "
-                      (jump-target->string l))]
-      [(Jnc l)
-       (string-append tab "jnc "
-                      (jump-target->string l))]
-      [(Cmovz dst src)
-       (string-append tab "cmovz "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovnz dst src)
-       (string-append tab "cmovnz "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmove dst src)
-       (string-append tab "cmove "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovne dst src)
-       (string-append tab "cmovne "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovl dst src)
-       (string-append tab "cmovl "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovle dst src)
-       (string-append tab "cmovle "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovg dst src)
-       (string-append tab "cmovg "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovge dst src)
-       (string-append tab "cmovge "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovo dst src)
-       (string-append tab "cmovo "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovno dst src)
-       (string-append tab "cmovno "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovc dst src)
-       (string-append tab "cmovc "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Cmovnc dst src)
-       (string-append tab "cmovnc "
-                      (reg->string dst) ", "
-                      (arg->string src))]
-      [(Call l)
-       (string-append tab "call "
-                      (jump-target->string l))]
-      [(Push a)
-       (string-append tab "push "
-                      (arg->string a))]
-      [(Pop r)
-       (string-append tab "pop "
-                      (reg->string r))]
-      [(Pushf)
-       (string-append tab "pushf")]
-      [(Popf)
-       (string-append tab "popf")]
-      [(Lea d (? offset? x))
+      [(Lea d ($ l))
+       ;; May need to use rel for more than just labels
        (string-append tab "lea "
-                      (arg->string d) ", "
-                      (arg->string x))]
-      [(Lea d x)
-       (string-append tab "lea "
-                      (arg->string d) ", [rel "
-                      (exp->string x) "]")]
-      [(Not r)
-       (string-append tab "not "
-                      (reg->string r))]
-      [(Div r)
-       (string-append tab "div "
-                      (arg->string r))]
+                      (exp->string d) ", [rel "
+                      (exp->string ($ l)) "]")]
       [(Equ x c)
        (string-append tab
                       (symbol->string x)
                       " equ "
                       (number->string c))]
-
       [(Db (? bytes? bs))
        (apply string-append tab "db " (add-between (map number->string (bytes->list bs)) ", "))]
-      [(Db x)
-       (string-append tab "db " (arg->string x))]
-      [(Dw x)
-       (string-append tab "dw " (arg->string x))]
-      [(Dd x)
-       (string-append tab "dd " (arg->string x))]
-      [(Dq x)
-       (string-append tab "dq " (arg->string x))]
-      ))
+      [_ (common-instruction->string i)]))
 
   (define (comment->string c)
     (match c
@@ -287,6 +134,7 @@
        (begin (write-string (fancy-instr->string i))
               (write-char #\newline)
               (instrs-display a))]))
+
 
   ;; entry point will be first label
   (match (findf Label? a)
