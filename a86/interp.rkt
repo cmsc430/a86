@@ -97,7 +97,7 @@
 
   (define init-label
     (match (findf Label? a)
-      [(Label l) l]
+      [(Label ($ l)) l]
       [_ (error "no initial label found")]))
 
   (define entry

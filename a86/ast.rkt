@@ -27,9 +27,13 @@
 
 (define check:target
   (λ (a x n)
-    (unless (or (symbol? x) (offset? x)); either register or label
-      (error n "expects symbol; given ~v" x))
-    (values a x)))
+    (match x
+      [(? offset?) (values a (exp-normalize x))]
+      [(? register?) (values a x)]
+      [(? nasm-label? x) (values a ($ x))]
+      [($ _) (values a x)]
+      [_
+       (error n "expects label, register, or offset; given ~v" x)])))
 
 (define check:cmov
   (λ (a a1 a2 n)
@@ -37,7 +41,7 @@
       (error n "expects register; given ~v" a1))
     (unless (or (register? a2) (offset? a2))
       (error n "expects register or offset; given ~v" a2))
-    (values a a1 a2)))
+    (values a a1 (exp-normalize a2))))
 
 (define check:arith
   (λ (a a1 a2 n)
@@ -73,15 +77,15 @@
   (λ (a a1 a2 n)
     (unless (or (register? a1) (offset? a1))
       (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2))
-      (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
+    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2) (nasm-label? a2) ($? a2))
+      (error n "expects register, offset, exact integer, or label; given ~v" a2))
     (when (and (offset? a1) (offset? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 64))
       (error n "literal must not exceed 64-bits; given ~v (~v bits)" a2 (integer-length a2)))
     (when (and (offset? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
-    (values a a1 a2)))
+    (values a (exp-normalize a1) (exp-normalize a2))))
 
 (define check:shift
   (λ (a a1 a2 n)
@@ -94,11 +98,14 @@
 
 (define check:offset
   (λ (a r i n)
-    (unless (or (register? r) (label? r))
+    (unless (or (register? r) (label? r) ($? r))
       (error n "expects register or label as first argument; given ~v" r))
     (unless (exact-integer? i)
       (error n "expects exact integer as second argument; given ~v" i))
-    (values a r i)))
+    (match r
+      [(? register?) (values a r i)]
+      [(? nasm-label?) (values a ($ r) i)]
+      [($ _) (values a r i)])))
 
 (define check:push
   (λ (a a1 n)
@@ -114,7 +121,7 @@
       (error n "expects register or offset; given ~v" dst))
     (unless (exp? x)
       (error n "expects memory expression; given ~v" x))
-    (values a dst (exp-normalize x))))
+    (values a (exp-normalize dst) (exp-normalize x))))
 
 (define check:none
   (λ (a n) (values a)))
@@ -146,17 +153,7 @@
 
 ;; See https://github.com/cmsc430/a86/issues/2 for discussion
 
-;; NOTE: this leads to some confusing things, like:
-;; > ($ 'foo)
-;; 'foo
-;; > (symbol? ($ 'foo))
-;; #f
-
-;; Maybe the printer for labels should not do anything special,
-;; only the printer for instructions.
-
-(define (->symbol x)
-  (if (symbol? x) x (vector-ref (struct->vector x) 1)))
+(provide (struct-out $))
 
 ;; Exp -> Exp
 (define (exp-normalize x)
@@ -165,7 +162,7 @@
     [(? register?) x]
     [(? nasm-label?) ($ x)]
     [(? integer? i) i]
-    [(Offset _ _) x]
+    [(Offset e1 e2) (Offset (exp-normalize e1) (exp-normalize e2))]
     [(Plus e1 e2)
      (Plus (exp-normalize e1)
            (exp-normalize e2))]))
@@ -262,7 +259,10 @@
                    [else (lambda (p port) (print p port mode))])])
         (for-each (lambda (e)
                     (write-string " " port)
-                    (recur e port))
+                    (match e
+                      [($ (? register?)) (recur e port)]
+                      [($ l) (recur l port)]
+                      [_ (recur e port)]))
                   (rest (rest (vector->list (struct->vector instr))))))
     (if (number? mode)
         (write-string ")" port)
@@ -414,9 +414,9 @@
 (define (label-decls asm)
   (match asm
     ['() '()]
-    [(cons (Label s) asm)
+    [(cons (Label ($ s)) asm)
      (cons s (label-decls asm))]
-    [(cons (Extern s) asm)
+    [(cons (Extern ($ s)) asm)
      (cons s (label-decls asm))]
     [(cons _ asm)
      (label-decls asm)]))
@@ -431,23 +431,23 @@
 (define (label-uses asm)
   (match asm
     ['() '()]
-    [(cons (Jmp (? label? s)) asm)
+    [(cons (Jmp ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Je (? label? s)) asm)
+    [(cons (Je ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jne (? label? s)) asm)
+    [(cons (Jne ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jg (? label? s)) asm)
+    [(cons (Jg ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jge (? label? s)) asm)
+    [(cons (Jge ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jl (? label? s)) asm)
+    [(cons (Jl ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jle (? label? s)) asm)
+    [(cons (Jle ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Call (? label? s)) asm)
+    [(cons (Call ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Lea _ (? label? s)) asm)
+    [(cons (Lea _ ($ s)) asm)
      (cons s (label-uses asm))]
     [(cons _ asm)
      (label-uses asm)]))

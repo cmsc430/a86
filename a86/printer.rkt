@@ -32,47 +32,35 @@
   (define label-symbol->string
     (match (system-type 'os)
       ['macosx
-       (λ (s) (string-append "_" (symbol->string s)))]
+       (λ (s) (string-append "$_" (symbol->string s)))]
       [_
        (if (current-shared?)
            (λ (s)
                   (if (memq s external-labels)
                       ; hack for ELF64 shared libraries in service of
                       ; calling external functions in asm-interp
-                      (string-append (symbol->string s) " wrt ..plt")
-                      (symbol->string s)))
-           symbol->string)]))
+                      (string-append "$" (symbol->string s) " wrt ..plt")
+                      (string-append "$" (symbol->string s))))
+           (λ (s) (string-append "$" (symbol->string s))))]))
 
   ;; (U Label Reg) -> String
   (define (jump-target->string t)
-    (match t
-      [(? reg?) (reg->string t)]
-      [(Offset (? reg? r) i)
-       (string-append "[" (reg->string r) " + " (number->string i) "]")]
-      [(Offset (? label? l) i)
-       (string-append "[" (label-symbol->string l) " + " (number->string i) "]")]
-      [_ (label-symbol->string t)]))
+    (exp->string t))
 
   ;; Arg -> String
   (define (arg->string a)
-    (match a
-      [(? reg?) (reg->string a)]
-      [(? integer?) (number->string a)]
-      [(Offset (? reg? r) i)
-       (string-append "[" (reg->string r) " + " (number->string i) "]")]
-      [(Offset (? label? l) i)
-       (string-append "[" (label-symbol->string l) " + " (number->string i) "]")]
-      [(Const l)
-       (symbol->string l)]
-      [(? exp?) (exp->string a)]))
+    (exp->string a))
 
   ;; Exp -> String
   (define (exp->string e)
     (match e
+      [(? reg?) (reg->string e)]
       [(? integer?) (number->string e)]
+      [($ x) (label-symbol->string x)]
+      [(Offset e1 e2)
+       (string-append "[" (exp->string e1) " + " (exp->string e2) "]")]
       [(Plus e1 e2)
-       (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]
-      [_ (label-symbol->string e)]))
+       (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]))
 
   (define tab (make-string 8 #\space))
 
@@ -89,13 +77,13 @@
   ;; Instruction -> String
   (define (simple-instr->string i)
     (match i
-      [(Text)      (string-append tab "section .text")]
-      [(Data)      (string-append tab "section .data align=8")] ; 8-byte aligned data
-      [(Ret)       (string-append tab "ret")]
-      [(Label l)   (string-append (label-symbol->string l) ":")]
-      [(Global x)  (string-append tab "global "  (label-symbol->string x))]
-      [(Extern l)  (begin0 (string-append tab "extern " (label-symbol->string l))
-                           (set! external-labels (cons l external-labels)))]
+      [(Text)         (string-append tab "section .text")]
+      [(Data)         (string-append tab "section .data align=8")] ; 8-byte aligned data
+      [(Ret)          (string-append tab "ret")]
+      [(Label ($ l))  (string-append (label-symbol->string l) ":")]
+      [(Global ($ x)) (string-append tab "global " (label-symbol->string x))]
+      [(Extern ($ l)) (begin0 (string-append tab "extern " (label-symbol->string l))
+                              (set! external-labels (cons l external-labels)))]
       [(Mov a1 a2)
        (string-append tab "mov "
                       (arg->string a1) ", "
