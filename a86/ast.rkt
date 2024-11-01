@@ -8,26 +8,32 @@
 
 (define check:label-symbol
   (λ (a x n)
-    (when (register? x)
-      (error n "cannot use register as label name; given ~v" x))
-    (unless (symbol? x)
-      (error n "expects symbol; given ~v" x))
-    (unless (label? x)
-      (error n "label names must conform to nasm restrictions"))
-    (values a x)))
+    (match x
+      [(? symbol?)
+       (unless (nasm-label? x)
+         (error n "label names must conform to nasm restrictions"))
+       (values a ($ x))]
+      [($ _)      
+       (values a x)]
+      [_
+       (error n "expects valid label name; given ~v" x)])))
 
 (define check:label-symbol+integer
   (λ (a x c n)
-    (check:label-symbol x n)
+    (let-values ([(a x) (check:label-symbol a x n)])
     (unless (integer? c)
       (error n "expects integer constant; given ~v" c))
-    (values a x c)))
+    (values a x c))))
 
 (define check:target
   (λ (a x n)
-    (unless (or (symbol? x) (offset? x)); either register or label
-      (error n "expects symbol; given ~v" x))
-    (values a x)))
+    (match x
+      [(? offset?) (values a (exp-normalize x))]
+      [(? register?) (values a x)]
+      [(? nasm-label? x) (values a ($ x))]
+      [($ _) (values a x)]
+      [_
+       (error n "expects label, register, or offset; given ~v" x)])))
 
 (define check:cmov
   (λ (a a1 a2 n)
@@ -35,7 +41,7 @@
       (error n "expects register; given ~v" a1))
     (unless (or (register? a2) (offset? a2))
       (error n "expects register or offset; given ~v" a2))
-    (values a a1 a2)))
+    (values a a1 (exp-normalize a2))))
 
 (define check:arith
   (λ (a a1 a2 n)
@@ -71,15 +77,15 @@
   (λ (a a1 a2 n)
     (unless (or (register? a1) (offset? a1))
       (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2))
-      (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
+    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2) (nasm-label? a2) ($? a2))
+      (error n "expects register, offset, exact integer, or label; given ~v" a2))
     (when (and (offset? a1) (offset? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 64))
       (error n "literal must not exceed 64-bits; given ~v (~v bits)" a2 (integer-length a2)))
     (when (and (offset? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
-    (values a a1 a2)))
+    (values a (exp-normalize a1) (exp-normalize a2))))
 
 (define check:shift
   (λ (a a1 a2 n)
@@ -92,11 +98,14 @@
 
 (define check:offset
   (λ (a r i n)
-    (unless (or (register? r) (label? r))
+    (unless (or (register? r) (label? r) ($? r))
       (error n "expects register or label as first argument; given ~v" r))
     (unless (exact-integer? i)
       (error n "expects exact integer as second argument; given ~v" i))
-    (values a r i)))
+    (match r
+      [(? register?) (values a r i)]
+      [(? nasm-label?) (values a ($ r) i)]
+      [($ _) (values a r i)])))
 
 (define check:push
   (λ (a a1 n)
@@ -110,9 +119,9 @@
   (λ (a dst x n)
     (unless (or (register? dst) (offset? dst))
       (error n "expects register or offset; given ~v" dst))
-    (unless (or (label? x) (offset? x) (exp? x))
-      (error n "expects label, offset, or expression; given ~v" x))
-    (values a dst x)))
+    (unless (exp? x)
+      (error n "expects memory expression; given ~v" x))
+    (values a (exp-normalize dst) (exp-normalize x))))
 
 (define check:none
   (λ (a n) (values a)))
@@ -138,6 +147,61 @@
 (struct %   Comment () #:transparent)
 (struct %%  Comment () #:transparent)
 (struct %%% Comment () #:transparent)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Labels
+
+;; See https://github.com/cmsc430/a86/issues/2 for discussion
+
+(provide (struct-out $))
+
+;; Exp -> Exp
+(define (exp-normalize x)
+  (match x
+    [($ _) x]
+    [(? register?) x]
+    [(? nasm-label?) ($ x)]
+    [(? integer? i) i]
+    [(Offset e1 e2) (Offset (exp-normalize e1) (exp-normalize e2))]
+    [(Plus e1 e2)
+     (Plus (exp-normalize e1)
+           (exp-normalize e2))]))
+
+(struct $ (label)
+  #:transparent
+  #:guard
+  (λ (x n)
+    (unless (symbol? x)
+      (error n "expects symbol; given ~v" x))
+    (unless (nasm-label? x)
+      (error n "label names must conform to nasm restrictions"))
+    (values x))
+
+  #;#;#;#:methods gen:equal+hash
+  [(define equal-proc     
+     (λ (i1 i2 equal?)
+       (equal? (->symbol i1)
+               (->symbol i2))))
+   (define hash-proc  (λ (i hash) (hash (->symbol i))))
+   (define hash2-proc (λ (i hash) (hash (->symbol i))))]
+  #:property prop:custom-print-quotable 'never
+  #;#;#;#:methods gen:custom-write
+  [(define (write-proc label port mode)     
+     (let ([recur (case mode
+                    [(#t) write]
+                    [(#f) display]
+                    [else (lambda (p port) (print p port mode))])])
+       (let ((s (vector-ref (struct->vector label) 1)))
+         (if (register? s)
+             (begin (if (number? mode)
+                        (write-string "($ " port)
+                        (write-string "#(struct:$ " port))
+                    (recur s port)                        
+                    (if (number? mode)
+                        (write-string ")" port)
+                        (write-string ")" port)))
+             (recur s port)))))])
+  
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -195,7 +259,10 @@
                    [else (lambda (p port) (print p port mode))])])
         (for-each (lambda (e)
                     (write-string " " port)
-                    (recur e port))
+                    (match e
+                      [($ (? register?)) (recur e port)]
+                      [($ l) (recur l port)]
+                      [_ (recur e port)]))
                   (rest (rest (vector->list (struct->vector instr))))))
     (if (number? mode)
         (write-string ")" port)
@@ -274,7 +341,9 @@
       (and (Plus? x)
            (exp? (Plus-e1 x))
            (exp? (Plus-e2 x)))
-      (symbol? x)
+      (register? x)
+      (nasm-label? x)
+      ($? x)
       (integer? x)))
 
 (provide offset? register? label? 64-bit-integer? 32-bit-integer?)
@@ -345,39 +414,40 @@
 (define (label-decls asm)
   (match asm
     ['() '()]
-    [(cons (Label s) asm)
+    [(cons (Label ($ s)) asm)
      (cons s (label-decls asm))]
-    [(cons (Extern s) asm)
+    [(cons (Extern ($ s)) asm)
      (cons s (label-decls asm))]
     [(cons _ asm)
      (label-decls asm)]))
 
-;; Symbol -> Boolean
+;; Any -> Boolean
 (define (nasm-label? s)
-  (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s)))
+  (and (symbol? s)
+       (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s))))
 
 ;; Asm -> (Listof Symbol)
 ;; Compute all uses of label names
 (define (label-uses asm)
   (match asm
     ['() '()]
-    [(cons (Jmp (? label? s)) asm)
+    [(cons (Jmp ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Je (? label? s)) asm)
+    [(cons (Je ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jne (? label? s)) asm)
+    [(cons (Jne ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jg (? label? s)) asm)
+    [(cons (Jg ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jge (? label? s)) asm)
+    [(cons (Jge ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jl (? label? s)) asm)
+    [(cons (Jl ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Jle (? label? s)) asm)
+    [(cons (Jle ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Call (? label? s)) asm)
+    [(cons (Call ($ s)) asm)
      (cons s (label-uses asm))]
-    [(cons (Lea _ (? label? s)) asm)
+    [(cons (Lea _ ($ s)) asm)
      (cons s (label-uses asm))]
     [(cons _ asm)
      (label-uses asm)]))
