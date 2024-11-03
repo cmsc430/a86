@@ -191,7 +191,7 @@
 
 (define (nasm-offending-line msg)  
   (match (regexp-match
-          "(.*):([0-9]+): error: invalid combination of opcode and operands" msg)
+          "(.*):([0-9]+): error: " msg)
     [(list _ (app string->path file) (app string->number line))
      (format
       "\nnasm offending line: ~a"
