@@ -39,3 +39,6 @@
 
 ;; Check nasm label conventions
 (check-exn exn:fail? (thunk (Jmp 'foo-bar)))
+
+;; Check arguments
+(check-exn exn:fail? (thunk (Lea (Offset 'rax 0) 'foo)))

@@ -117,8 +117,8 @@
 
 (define check:lea
   (λ (a dst x n)
-    (unless (or (register? dst) (offset? dst))
-      (error n "expects register or offset; given ~v" dst))
+    (unless (register? dst)
+      (error n "expects register; given ~v" dst))
     (unless (exp? x)
       (error n "expects memory expression; given ~v" x))
     (values a (exp-normalize dst) (exp-normalize x))))
