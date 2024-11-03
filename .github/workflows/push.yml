@@ -29,6 +29,11 @@ jobs:
     - name: Install a86 package
       run: |
         raco pkg install a86/
+    - name: Install langs package
+      run: |
+        # This *should* use the locally installed a86
+        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#main'
     - name: Run tests
       run: |
         xvfb-run raco test -p a86
+	xvfb-run raco rest -p langs
