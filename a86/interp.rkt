@@ -186,9 +186,25 @@
    "if you did and still get this error; please share with course staff."))
 
 (define (nasm:error msg)
-  (raise (exn:nasm (format "~a\n\n~a" nasm-msg msg)
+  (raise (exn:nasm (format "~a\n\n~a~a" nasm-msg msg (nasm-offending-line msg))
                    (current-continuation-marks))))
 
+(define (nasm-offending-line msg)  
+  (match (regexp-match
+          "(.*):([0-9]+): error: invalid combination of opcode and operands" msg)
+    [(list _ (app string->path file) (app string->number line))
+     (format
+      "\nnasm offending line: ~a"
+      (with-input-from-file file
+        (thunk
+         (let loop ([l (read-line)]
+                    [i line])
+           (if (= i 1)
+               l
+               (loop (read-line) (sub1 i)))))))]
+    [_ ""]))
+
+  
 ;; run nasm on t.s to create t.o
 (define (nasm t.s t.o)
   (define err-port (open-output-string))
