@@ -93,11 +93,10 @@
       [(Global ($ x)) (string-append tab "global " (label-symbol->string x))]
       [(Extern ($ l)) (begin0 (string-append tab "extern " (label-symbol->string l))
                               (set! external-labels (cons l external-labels)))]
-      [(Lea d ($ l))
-       ;; May need to use rel for more than just labels
+      [(Lea d e)
        (string-append tab "lea "
                       (exp->string d) ", [rel "
-                      (exp->string ($ l)) "]")]
+                      (exp->string e) "]")]
       [(Equ x c)
        (string-append tab
                       (symbol->string x)
