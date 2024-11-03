@@ -14,14 +14,6 @@
 (define (asm-string a)
   (with-output-to-string (lambda () (asm-display a))))
 
-;; Instruction -> String
-(define (instruction-name i)
-  (string-downcase (symbol->string (object-name i))))
-
-;; Instruction -> [Listof Arg]
-(define (instruction-args i)
-  (rest (rest (vector->list (struct->vector i)))))
-
 (define tab (make-string 8 #\space))
 
 (define (comment->string c)

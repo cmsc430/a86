@@ -208,7 +208,16 @@
 
 (require racket/struct)
 (define current-annotation (make-parameter #f))
-(provide instruction-annotation current-annotation)
+(provide instruction-annotation current-annotation
+         instruction-name instruction-args)
+
+;; Instruction -> String
+(define (instruction-name i)
+  (string-downcase (symbol->string (object-name i))))
+
+;; Instruction -> [Listof Arg]
+(define (instruction-args i)
+  (rest (rest (vector->list (struct->vector i)))))
 
 (struct instruction (annotation))
 
@@ -428,30 +437,18 @@
 
 ;; Asm -> (Listof Symbol)
 ;; Compute all uses of label names
-(define (label-uses asm)
-  (match asm
-    ['() '()]
-    [(cons (Jmp ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Je ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Jne ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Jg ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Jge ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Jl ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Jle ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Call ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons (Lea _ ($ s)) asm)
-     (cons s (label-uses asm))]
-    [(cons _ asm)
-     (label-uses asm)]))
-
+(define (label-uses i)
+  (match i
+    [(Label _) '()]  ; declaration, not use
+    [(Extern _) '()] ; declaration, not use
+    [(instruction _)
+     (append-map label-uses (instruction-args i))]
+    [($ x) (list x)]
+    [(Plus e1 e2)
+     (append (label-uses e1) (label-uses e2))]
+    [(cons x y)
+     (append (label-uses x) (label-uses y))]
+    [_ '()]))
 
 ;; Asm -> Void
 (define (check-label-targets-declared asm)
