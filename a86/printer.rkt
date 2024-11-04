@@ -82,11 +82,10 @@
     [(Data)         (string-append tab "section .data align=8")] ; 8-byte aligned data
     [(Extern ($ l)) (string-append tab "extern " (extern-label-decl-symbol->string l))]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
-    [(Lea d ($ l))
-     ;; May need to use rel for more than just labels
+    [(Lea d e)
      (string-append tab "lea "
                     (exp->string d) ", [rel "
-                    (exp->string ($ l)) "]")]
+                    (exp->string e) "]")]
     [(Equ x c)
      (string-append tab
                     (symbol->string x)
