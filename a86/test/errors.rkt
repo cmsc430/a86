@@ -27,6 +27,7 @@
 (check-exn exn:fail? (thunk (prog (Global 'foo) (Label 'start) (Label 'foo) (Ret))))
 (check-not-exn       (thunk (prog (Global 'start) (Label 'start) (Ret))))
 (check-not-exn       (thunk (prog (Label 'start) (Ret) (Global 'start))))
+(check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Jmp (Offset 'y 8)))))
 
 ;; Check comment escape hatch is closed
 (check-exn exn:fail? (thunk (% "comment\nmov rax 42")))
@@ -38,3 +39,6 @@
 
 ;; Check nasm label conventions
 (check-exn exn:fail? (thunk (Jmp 'foo-bar)))
+
+;; Check arguments
+(check-exn exn:fail? (thunk (Lea (Offset 'rax 0) 'foo)))
