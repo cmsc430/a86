@@ -25,26 +25,17 @@
 (define current-extern-labels (make-parameter '()))
 
 ;; Label -> String
-;; prefix with _ for Mac
-(define label-symbol->string
-  (match (system-type 'os)
-    ['macosx
-     (λ (s) (string-append "$_" (symbol->string s)))]
-    [_
-     (λ (s)
-       (if (and (current-shared?) (memq s (current-extern-labels)))
-           ; hack for ELF64 shared libraries in service of
-           ; calling external functions in asm-interp
-           (string-append "$" (symbol->string s) " wrt ..plt")
-           (string-append "$" (symbol->string s))))]))
+(define (label-symbol->string s)
+  ;; This should maybe be handled specially in the printing of Call rather
+  ;; than in every label...
+  (if (and (eq? (system-type 'os) 'unix) (current-shared?) (memq s (current-extern-labels)))
+      ; hack for ELF64 shared libraries in service of
+      ; calling external functions in asm-interp
+      (string-append "$" (symbol->string s) " wrt ..plt")
+      (string-append "$" (symbol->string s))))
 
-(define extern-label-decl-symbol->string
-  (match (system-type 'os)
-    ['macosx
-     (λ (s) (string-append "$_" (symbol->string s)))]
-    [_
-     (λ (s)
-       (string-append "$" (symbol->string s)))]))
+(define (extern-label-decl-symbol->string s)
+  (string-append "$" (symbol->string s)))
   
 ;; Instruction -> String
 (define (common-instruction->string i)

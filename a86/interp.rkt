@@ -37,8 +37,6 @@
 (define fclose
   (get-ffi-obj "fclose" (ffi-lib #f) (_fun _pointer _-> _void)))
 
-(define fmt (if (eq? (system-type 'os) 'macosx) 'macho64 'elf64))
-
 ;; WARNING: The heap is re-used, so make sure you're done with it
 ;; before calling asm-interp again
 (define *heap*
@@ -208,8 +206,14 @@
 ;; run nasm on t.s to create t.o
 (define (nasm t.s t.o)
   (define err-port (open-output-string))
+  (define fmt (if (eq? (system-type 'os) 'macosx) 'macho64 'elf64))
+  (define prefix
+    (if (eq? (system-type 'os) 'macosx)
+        "'_'"
+        "''"))
+
   (unless (parameterize ((current-error-port err-port))
-            (system (format "nasm -f ~a ~a -o ~a" fmt t.s t.o)))
+            (system (format "nasm -f ~a --gprefix ~a ~a -o ~a" fmt prefix t.s t.o)))
     (nasm:error (get-output-string err-port))))
 
 (struct exn:ld exn:fail:user ())
