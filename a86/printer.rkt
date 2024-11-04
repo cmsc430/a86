@@ -38,6 +38,14 @@
            (string-append "$" (symbol->string s) " wrt ..plt")
            (string-append "$" (symbol->string s))))]))
 
+(define extern-label-decl-symbol->string
+  (match (system-type 'os)
+    ['macosx
+     (λ (s) (string-append "$_" (symbol->string s)))]
+    [_
+     (λ (s)
+       (string-append "$" (symbol->string s)))]))
+  
 ;; Instruction -> String
 (define (common-instruction->string i)
   (let ((as (instruction-args i)))
@@ -72,6 +80,7 @@
   (match i
     [(Text)         (string-append tab "section .text")]
     [(Data)         (string-append tab "section .data align=8")] ; 8-byte aligned data
+    [(Extern ($ l)) (string-append tab "extern " (extern-label-decl-symbol->string l))]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
     [(Lea d ($ l))
      ;; May need to use rel for more than just labels
