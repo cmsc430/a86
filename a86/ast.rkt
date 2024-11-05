@@ -41,6 +41,10 @@
       (error n "expects register; given ~v" a1))
     (unless (or (register? a2) (offset? a2))
       (error n "expects register or offset; given ~v" a2))
+    (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
+      (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
+             a1 (register-size a1)
+             a2 (register-size a2)))
     (values a a1 (exp-normalize a2))))
 
 (define check:arith
@@ -51,6 +55,10 @@
       (error n "expects exact integer, register, or offset; given ~v" a2))
     (when (and (exact-integer? a2) (> (integer-length a2) 32))
       (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-length a2)))
+    (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
+      (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
+             a1 (register-size a1)
+             a2 (register-size a2)))
     (values a a1 a2)))
 
 (define check:register
@@ -71,6 +79,10 @@
       (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-length a2)))
     (when (and (offset? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
+    (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
+      (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
+             a1 (register-size a1)
+             a2 (register-size a2)))
     (values a a1 a2)))
 
 (define check:mov
@@ -85,6 +97,10 @@
       (error n "literal must not exceed 64-bits; given ~v (~v bits)" a2 (integer-length a2)))
     (when (and (offset? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
+    (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
+      (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
+             a1 (register-size a1)
+             a2 (register-size a2)))
     (values a (exp-normalize a1) (exp-normalize a2))))
 
 (define check:shift
@@ -355,13 +371,34 @@
       ($? x)
       (integer? x)))
 
-(provide offset? register? label? 64-bit-integer? 32-bit-integer?)
+(provide offset? register? label? 64-bit-integer? 32-bit-integer? register-size)
 
 (define offset? Offset?)
 
+(define 64-bit-registers
+  '(rax rbx rcx rdx rsi rdi rbp rsp r8 r9 r10 r11 r12 r13 r14 r15))
+
+(define 32-bit-registers
+  '(eax ebx ecx edx esi edi ebp esp))
+
+(define 16-bit-registers
+  '(ax bx cx dx si di bp sp))
+
+(define 8-bit-registers
+  '(ah al bh bl ch cl dh dl))
+
+(define registers
+  (append 64-bit-registers 32-bit-registers 16-bit-registers 8-bit-registers))
+
 (define (register? x)
-  (and (memq x '(cl eax rax rbx rcx rdx rbp rsp rsi rdi r8 r9 r10 r11 r12 r13 r14 r15))
+  (and (memq x registers)
        #t))
+
+(define (register-size r)
+  (cond [(memq r 64-bit-registers) 64]
+        [(memq r 32-bit-registers) 32]
+        [(memq r 16-bit-registers) 16]
+        [(memq r  8-bit-registers)  8]))
 
 (define (64-bit-integer? x)
   (and (exact-integer? x)

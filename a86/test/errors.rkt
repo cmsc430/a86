@@ -42,3 +42,13 @@
 
 ;; Check arguments
 (check-exn exn:fail? (thunk (Lea (Offset 'rax 0) 'foo)))
+
+;; Check register size agreement
+(check-exn exn:fail? (thunk (Mov 'rax 'eax)))
+(check-exn exn:fail? (thunk (Mov 'eax 'rax)))
+(check-exn exn:fail? (thunk (Cmove 'eax 'rax)))
+(check-exn exn:fail? (thunk (Cmove 'rax 'eax)))
+(check-exn exn:fail? (thunk (And 'rax 'eax)))
+(check-exn exn:fail? (thunk (And 'eax 'rax)))
+(check-exn exn:fail? (thunk (Add 'rax 'eax)))
+(check-exn exn:fail? (thunk (Add 'eax 'rax)))
