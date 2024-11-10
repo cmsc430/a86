@@ -211,6 +211,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Offsets
 
+(provide Offset Offset?)
+
 (define check:offset
   (λ (m n)
     (unless (exp? m)
