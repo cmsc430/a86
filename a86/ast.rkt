@@ -503,6 +503,8 @@
   (match i
     [(Label _) '()]  ; declaration, not use
     [(Extern _) '()] ; declaration, not use
+    [(Offset m)
+     (label-uses m)]
     [(instruction _)
      (append-map label-uses (instruction-args i))]
     [($ x) (list x)]
