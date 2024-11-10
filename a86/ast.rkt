@@ -112,17 +112,6 @@
       (error n "expects exact integer in [0,63]; given ~v" a2))
     (values a a1 a2)))
 
-(define check:offset
-  (λ (a r i n)
-    (unless (or (register? r) (label? r) ($? r))
-      (error n "expects register or label as first argument; given ~v" r))
-    (unless (exact-integer? i)
-      (error n "expects exact integer as second argument; given ~v" i))
-    (match r
-      [(? register?) (values a r i)]
-      [(? nasm-label?) (values a ($ r) i)]
-      [($ _) (values a r i)])))
-
 (define check:push
   (λ (a a1 n)
     (unless (or (exact-integer? a1) (register? a1))
@@ -178,7 +167,7 @@
     [(? register?) x]
     [(? nasm-label?) ($ x)]
     [(? integer? i) i]
-    [(Offset e1 e2) (Offset (exp-normalize e1) (exp-normalize e2))]
+    [(Offset e1) (Offset (exp-normalize e1))]
     [(Plus e1 e2)
      (Plus (exp-normalize e1)
            (exp-normalize e2))]))
@@ -218,6 +207,37 @@
                         (write-string ")" port)))
              (recur s port)))))])
   
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Offsets
+
+(define check:offset
+  (λ (m n)
+    (unless (exp? m)
+      (error n "expects a memory expression; given ~v" m))
+     (values (exp-normalize m))))
+
+(struct %offset (m)
+  #:reflection-name 'Offset
+  #:transparent
+  #:guard check:offset)
+
+(define Offset? %offset?)
+
+(define-match-expander Offset
+  (λ (stx)
+    (syntax-case stx ()
+      [(_ p)  #'(%offset p)]
+      [(_ p1 p2) #'(%offset (Plus p1 p2))]))
+  (λ (stx)
+    (syntax-case stx ()
+      [m (identifier? #'m)
+         #'(case-lambda
+             [(m) (%offset m)]
+             [(m1 m2) (%offset (Plus m1 m2))])]
+      [(_ m) #'(%offset m)]
+      [(_ m1 m2) #'(%offset (Plus m1 m2))])))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -345,7 +365,7 @@
 (instruct Not    (x)       check:register)
 (instruct Div    (den)     check:register)
 
-(instruct Offset (r i)     check:offset)        ;; May need to make this not an instruction
+;(instruct Offset (m)       check:offset)        ;; May need to make this not an instruction
 (instruct Extern (x)       check:label-symbol)
 
 (instruct Equ    (x v)     check:label-symbol+integer)
