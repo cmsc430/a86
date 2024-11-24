@@ -519,7 +519,7 @@
   (match asm
     ['() '()]
     [(cons (Extern ($ s)) asm)
-     (cons s (label-decls asm))]
+     (cons s (extern-decls asm))]
     [(cons _ asm)
      (extern-decls asm)]))
 
