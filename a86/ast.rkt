@@ -495,21 +495,33 @@
 
 ;; Asm -> Void
 (define (check-unique-label-decls xs)
-  (let ((r (check-duplicates (label-decls xs))))
+  (let ((r (check-duplicates (all-label-decls xs))))
     (when r
       (error 'prog "duplicate label declaration found: ~v" r))))
 
 ;; Asm -> (Listof Symbol)
 ;; Compute all declared label names
+(define (all-label-decls asm)
+  (append (label-decls asm)
+          (remove-duplicates (extern-decls asm))))
+
+;; Asm -> (Listof Symbol)
 (define (label-decls asm)
   (match asm
     ['() '()]
     [(cons (Label ($ s)) asm)
      (cons s (label-decls asm))]
+    [(cons _ asm)
+     (label-decls asm)]))
+
+;; Asm -> (Listof Symbol)
+(define (extern-decls asm)
+  (match asm
+    ['() '()]
     [(cons (Extern ($ s)) asm)
      (cons s (label-decls asm))]
     [(cons _ asm)
-     (label-decls asm)]))
+     (extern-decls asm)]))
 
 ;; Any -> Boolean
 (define (nasm-label? s)
@@ -535,7 +547,7 @@
 
 ;; Asm -> Void
 (define (check-label-targets-declared asm)
-  (let ((ds (apply set (label-decls asm)))
+  (let ((ds (apply set (all-label-decls asm)))
         (us (apply set (label-uses asm))))
 
     (let ((undeclared (set-subtract us ds)))

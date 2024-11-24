@@ -50,6 +50,9 @@
 (check-not-exn       (thunk (prog (Global 'start) (Label 'start) (Ret))))
 (check-not-exn       (thunk (prog (Label 'start) (Ret) (Global 'start))))
 (check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Jmp (Offset 'y 8)))))
+(check-not-exn       (thunk (prog (Global 'x) (Label 'x) (Extern 'y) (Extern 'y) (Ret))))
+(check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Extern 'x))))
+(check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Label 'y) (Extern 'y))))
 
 ;; Check comment escape hatch is closed
 (check-exn exn:fail? (thunk (% "comment\nmov rax 42")))
