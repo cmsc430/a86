@@ -75,11 +75,23 @@
     [(Plus e1 e2)
      (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]))
 
+(define (text-section n)
+  (match (system-type 'os)
+    ['macosx (format "section __TEXT,~a align=16" n)]
+    [_       (format "section ~a progbits alloc exec nowrite align=16" n)]))
+
+(define (data-section n)
+  (match (system-type 'os)
+    ['macosx (format "section __DATA,~a align=8" n)]
+    [_       (format "section ~a progbits alloc noexec write align=8" n)]))
+
 ;; Instruction -> String
 (define (simple-instr->string i)
   (match i
     [(Text)         (string-append tab "section .text")]
+    [(Text n)       (string-append tab (text-section n))]
     [(Data)         (string-append tab "section .data align=8")] ; 8-byte aligned data
+    [(Data n)       (string-append tab (data-section n))]
     [(Extern ($ l)) (string-append tab "extern " (extern-label-decl-symbol->string l))]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
     [(Lea d e)
