@@ -416,20 +416,24 @@
 
 (define offset? Offset?)
 
-(define 64-bit-registers
-  '(rax rbx rcx rdx rsi rdi rbp rsp r8 r9 r10 r11 r12 r13 r14 r15))
+(define-syntax-rule
+  (def-registers (group r ...) ...)
+  (begin
+    (begin (provide r) ...
+           (define r 'r) ...
+           (define group
+             (list r ...)))
+    ...))
 
-(define 32-bit-registers
-  '(eax ebx ecx edx esi edi ebp esp))
-
-(define 16-bit-registers
-  '(ax bx cx dx si di bp sp))
-
-(define 8-bit-registers
-  '(ah al bh bl ch cl dh dl))
+(def-registers
+  (64-bit-registers     rax rbx rcx rdx rsi  rdi  rbp rsp r8  r9  r10  r11  r12  r13  r14  r15)
+  (32-bit-registers     eax ebx ecx edx esi  edi  ebp esp r8d r9d r10d r11d r12d r13d r14d r15d)
+  (16-bit-registers      ax  bx  cx  dx  si   di  bp  sp  r8w r9w r10w r11w r12w r13w r14w r15w)
+  (8-bit-high-registers  ah  bh  ch  dh)
+  (8-bit-low-registers   al  bl  cl  dl  sil  dil bpl spl r8b r9b r10b r11b r12b r13b r14b r15b))
 
 (define registers
-  (append 64-bit-registers 32-bit-registers 16-bit-registers 8-bit-registers))
+  (append 64-bit-registers 32-bit-registers 16-bit-registers 8-bit-high-registers 8-bit-low-registers))
 
 (define (register? x)
   (and (memq x registers)
@@ -439,7 +443,8 @@
   (cond [(memq r 64-bit-registers) 64]
         [(memq r 32-bit-registers) 32]
         [(memq r 16-bit-registers) 16]
-        [(memq r  8-bit-registers)  8]))
+        [(memq r  8-bit-high-registers) 8]
+        [(memq r  8-bit-low-registers)  8]))
 
 (define (integer-size x)
   (integer-length (abs x)))
