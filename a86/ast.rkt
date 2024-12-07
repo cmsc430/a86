@@ -435,6 +435,23 @@
 (define registers
   (append 64-bit-registers 32-bit-registers 16-bit-registers 8-bit-high-registers 8-bit-low-registers))
 
+(define (make-register-converter group)
+  (define (f x) (or (cdr x) (error "no conversion available")))
+  (lambda (r)
+    (cond
+      [(assq r (map cons 64-bit-registers group)) => f]
+      [(assq r (map cons 32-bit-registers group)) => f]
+      [(assq r (map cons 16-bit-registers group)) => f]
+      [(assq r (map cons 8-bit-low-registers group)) => f]
+      [(assq r (map cons 8-bit-high-registers (take group 4))) => f])))
+
+(provide reg-8-bit-low reg-8-bit-high reg-16-bit reg-32-bit reg-64-bit)
+(define reg-8-bit-low (make-register-converter 8-bit-low-registers))
+(define reg-8-bit-high (make-register-converter (append 8-bit-high-registers (make-list 12 #f))))
+(define reg-16-bit (make-register-converter 16-bit-registers))
+(define reg-32-bit (make-register-converter 32-bit-registers))
+(define reg-64-bit (make-register-converter 64-bit-registers))
+
 (define (register? x)
   (and (memq x registers)
        #t))
