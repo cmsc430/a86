@@ -419,7 +419,7 @@
 (define-syntax-rule
   (def-registers (group r ...) ...)
   (begin
-    (begin (provide r) ...
+    (begin ; (provide r) ... ; avoid for now
            (define r 'r) ...
            (define group
              (list r ...)))
