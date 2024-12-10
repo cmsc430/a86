@@ -6,6 +6,12 @@
 ;; These are used to guard the instruction constructors to reject bad inputs
 ;; with decent error messages.
 
+(define check:align
+  (λ (a x n)
+    (unless (power-of-2? x)
+      (error n "expects power of 2; given ~v" x))
+    (values a x)))
+
 (define check:label-symbol
   (λ (a x n)
     (match x
@@ -130,6 +136,11 @@
 
 (define check:none
   (λ (a n) (values a)))
+
+(define (power-of-2? n)
+  (and (exact-integer? n)
+       (> n 0)
+       (= (bitwise-and n (- n 1)) 0)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Comments
@@ -315,10 +326,10 @@
         (write-string ")" port)
         (write-string ")" port))))
 
+;(instruct Text   ()        check:none)
+;(instruct Data   ()        check:none)
 
-(instruct Text   ()        check:none)
-(instruct Data   ()        check:none)
-
+(instruct Align  (x)       check:align)
 (instruct Global (x)       check:label-symbol)
 (instruct Label  (x)       check:label-symbol)
 (instruct Call   (x)       check:target)
@@ -483,6 +494,63 @@
 (define (a86:instruction? x)
   (or (instruction? x)
       (Comment? x)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Sections
+
+(define-syntax-rule
+  (section-type T default)
+  (begin
+    (provide T)
+    (struct %T instruction (name)
+      #:reflection-name 'T
+      #:transparent
+      #:property prop:custom-print-quotable 'never
+      #:methods gen:custom-write
+      [(define write-proc
+         (sect-print 'T))]
+      #:methods gen:equal+hash
+      [(define equal-proc (λ (i1 i2 equal?)
+                            (equal? (struct->vector i1)
+                                    (struct->vector i2))))
+       (define hash-proc  (λ (i hash) (hash (struct->vector i))))
+       (define hash2-proc (λ (i hash) (hash (struct->vector i))))])
+    (define-match-expander T
+      (lambda (stx)
+        (syntax-case stx ()
+          [(_) #'(%T _ default)]
+          [(_ p) #'(%T _ p)]))
+      (lambda (stx)
+        (syntax-case stx ()
+          [m (identifier? #'m) #'(λ ([x default]) (%T (current-annotation) x))]
+          [(m) #'(%T (current-annotation) default)]
+          [(m n) #'(%T (current-annotation) n)])))))
+
+(define (sect-print type)
+  (lambda (instr port mode)
+    (if (number? mode)
+        (write-string "(" port)
+        (write-string "#(struct:" port))
+    (write-string (symbol->string type) port)
+    (let ([recur (case mode
+                   [(#t) write]
+                   [(#f) display]
+                   [else (lambda (p port) (print p port mode))])])
+        (for-each (lambda (e)
+                    (match e
+                      ['.text (void)]
+                      ['.data (void)]
+                      [_
+                       (write-string " " port)
+                       (recur e port)]))
+                  (rest (rest (vector->list (struct->vector instr))))))
+    (if (number? mode)
+        (write-string ")" port)
+        (write-string ")" port))))
+
+(section-type Text '.text)
+(section-type Data '.data)
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instruction sequencing and program error checking
