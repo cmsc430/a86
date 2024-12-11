@@ -53,7 +53,7 @@
                    (instruction-name i)
                    (apply string-append
                           (if (empty? as) "" " ")
-                          (add-between (map exp->string as)
+                          (add-between (map arg->string as)
                                        ", ")))))
 ;; Instruction -> String
 (define (fancy-instr->string i)
@@ -64,16 +64,26 @@
             (format "~a ; ~.s" s (instruction-annotation i)))
         s)))
 
+;; Exp ∪ Reg ∪ Offset -> String
+(define (arg->string e)
+  (match e
+    [(? register?) (symbol->string e)]
+    [(Offset e)
+     (string-append "[" (exp->string e) "]")]
+    [_ (exp->string e)]))
+
 ;; Exp -> String
 (define (exp->string e)
   (match e
     [(? register?) (symbol->string e)]
     [(? integer?) (number->string e)]
     [($ x) (label-symbol->string x)]
-    [(Offset e1 e2)
-     (string-append "[" (exp->string e1) " + " (exp->string e2) "]")]
-    [(Plus e1 e2)
-     (string-append "(" (exp->string e1) " + " (exp->string e2) ")")]))
+    [(list '? e1 e2 e3)
+     (string-append "(" (exp->string e1) " ? " (exp->string e2) " : " (exp->string e3) ")")]
+    [(list (? exp-unop? o) e1)
+     (string-append "(" (symbol->string o) " " (exp->string e1) ")")]
+    [(list (? exp-binop? o) e1 e2)
+     (string-append "(" (exp->string e1) " " (symbol->string o) " " (exp->string e2) ")")]))
 
 (define (text-section n)
   (match (system-type 'os)
@@ -96,8 +106,8 @@
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
     [(Lea d e)
      (string-append tab "lea "
-                    (exp->string d) ", [rel "
-                    (exp->string e) "]")]
+                    (arg->string d) ", [rel "
+                    (arg->string e) "]")]
     [(Equ x c)
      (string-append tab
                     (symbol->string x)
