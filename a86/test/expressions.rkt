@@ -1,5 +1,5 @@
 #lang racket
-(require rackunit "../ast.rkt" "../interp.rkt")
+(require rackunit "../ast.rkt" "../interp.rkt" "../check-nasm.rkt")
 
 (define (ev e)
   (asm-interp (prog (Global 'entry) (Label 'entry) (Mov 'rax e) (Ret))))
