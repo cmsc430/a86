@@ -95,8 +95,8 @@
   (λ (a a1 a2 n)
     (unless (or (register? a1) (offset? a1))
       (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2) (nasm-label? a2) ($? a2))
-      (error n "expects register, offset, exact integer, or label; given ~v" a2))
+    (unless (or (register? a2) (offset? a2) (Const? a2) (exp? a2))
+      (error n "expects register, offset, or expression; given ~v" a2))
     (when (and (offset? a1) (offset? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
     (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
@@ -107,7 +107,7 @@
       (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
              a1 (register-size a1)
              a2 (register-size a2)))
-    (values a (exp-normalize a1) (exp-normalize a2))))
+    (values a (arg-normalize a1) (arg-normalize a2))))
 
 (define check:shift
   (λ (a a1 a2 n)
@@ -132,7 +132,7 @@
       (error n "expects register; given ~v" dst))
     (unless (exp? x)
       (error n "expects memory expression; given ~v" x))
-    (values a (exp-normalize dst) (exp-normalize x))))
+    (values a (arg-normalize dst) (arg-normalize x))))
 
 (define check:none
   (λ (a n) (values a)))
@@ -164,6 +164,85 @@
 (struct %%  Comment () #:transparent)
 (struct %%% Comment () #:transparent)
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Expressions
+
+(define (arg-normalize a)
+  (if (exp? a)
+      (exp-normalize a)
+      a))
+
+(provide exp?)
+
+(define (exp? x)
+  (match x
+    [(? register?) #t]
+    [(Plus (? exp?) (? exp?)) #t] ; for backwards compatability
+    [(list '? (? exp?) (? exp?) (? exp?)) #t]
+    ['$ #t]
+    ['$$ #t]
+    [(list (? exp-unop?) (? exp?)) #t]
+    [(list (? exp-binop?) (? exp?) (? exp?)) #t]
+    [($ _) #t]
+    [(? nasm-label?) #t]
+    [(? 64-bit-integer?) #t]
+    [_ #f]))
+
+(provide exp)
+
+;; exp is like quasiquote with an implicit unquote at the leaves of the expression
+;; constructors
+(define-syntax exp
+  (λ (stx) ; intentionally non-hygienic
+    (syntax-case* stx (? $ $$) (λ (i1 i2) (eq? (syntax->datum i1) (syntax->datum i2)))
+      [(_ $) #''$]
+      [(_ $$) #''$$]
+      [(_ (b e1))
+       (memq (syntax->datum #'b) exp-unops)
+       #'(list 'b (exp e1))]
+      [(_ (b e1 e2))
+       (memq (syntax->datum #'b) exp-binops)
+       #'(list 'b (exp e1) (exp e2))]
+      [(_ (? e1 e2 e3))
+       #'(list '? (exp e1) (exp e2) (exp e3))]
+      [(_ e) #'e])))
+
+(provide exp-unop?)
+(define (exp-unop? x)
+  (memq x exp-unops))
+
+(provide exp-binop?)
+(define (exp-binop? x)
+  (memq x exp-binops))
+
+(define exp-unops
+  '(- + ~ ! SEG))
+(define-for-syntax exp-unops
+  '(- + ~ ! SEG))
+(define exp-binops
+  '(<<< << < <= < <=> > >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
+(define-for-syntax exp-binops
+  '(<<< << < <= < <=> > >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
+
+;; Exp -> Exp
+(define (exp-normalize x)
+  (match x
+    [(? register?) x]
+    [(? nasm-label?) ($ x)]
+    ;[(Offset e1) (Offset (exp-normalize e1))]
+    [(Plus e1 e2)
+     (list '+
+           (exp-normalize e1)
+           (exp-normalize e2))]
+    [(list '? e1 e2 e3)
+     (list '? (exp-normalize e1) (exp-normalize e2) (exp-normalize e3))]
+    [(list (? exp-unop? o) e1)
+     (list o (exp-normalize e1))]
+    [(list (? exp-binop? o) e1 e2)
+     (list o (exp-normalize e1) (exp-normalize e2))]
+    [_ x]))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Labels
 
@@ -171,17 +250,7 @@
 
 (provide (struct-out $))
 
-;; Exp -> Exp
-(define (exp-normalize x)
-  (match x
-    [($ _) x]
-    [(? register?) x]
-    [(? nasm-label?) ($ x)]
-    [(? integer? i) i]
-    [(Offset e1) (Offset (exp-normalize e1))]
-    [(Plus e1 e2)
-     (Plus (exp-normalize e1)
-           (exp-normalize e2))]))
+
 
 (struct $ (label)
   #:transparent
@@ -226,8 +295,8 @@
 
 (define check:offset
   (λ (m n)
-    (unless (exp? m)
-      (error n "expects a memory expression; given ~v" m))
+    (unless (or (exp? m) (register? m))
+      (error n "expects a memory expression or register; given ~v" m))
      (values (exp-normalize m))))
 
 (struct %offset (m)
@@ -412,7 +481,8 @@
 (provide (struct-out Plus))
 (struct Plus (e1 e2) #:transparent)
 
-(provide exp?)
+#;(provide exp?)
+#;
 (define (exp? x)
   (or (Offset? x)
       (and (Plus? x)
@@ -622,17 +692,31 @@
 ;; Compute all uses of label names
 (define (label-uses i)
   (match i
+    [(? register?) '()]
     [(Label _) '()]  ; declaration, not use
     [(Extern _) '()] ; declaration, not use
     [(Offset m)
      (label-uses m)]
+    [(? exp?)
+     (exp-label-uses i)]
     [(instruction _)
      (append-map label-uses (instruction-args i))]
+    [(cons x y)
+     (append (label-uses x) (label-uses y))]
+    [_ '()]))
+
+;; Exp -> (Listof Symbol)
+(define (exp-label-uses e)
+  (match e
     [($ x) (list x)]
     [(Plus e1 e2)
      (append (label-uses e1) (label-uses e2))]
-    [(cons x y)
-     (append (label-uses x) (label-uses y))]
+    [(list '? e1 e2 e3)
+     (append (label-uses e1) (label-uses e2) (label-uses e3))]
+    [(list (? exp-unop?) e1)
+     (label-uses e1)]
+    [(list (? exp-binop?) e1 e2)
+     (append (label-uses e1) (label-uses e2))]
     [_ '()]))
 
 ;; Asm -> Void
