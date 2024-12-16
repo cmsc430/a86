@@ -189,23 +189,23 @@
     [(? 64-bit-integer?) #t]
     [_ #f]))
 
-(provide exp)
+(provide @)
 
-;; exp is like quasiquote with an implicit unquote at the leaves of the expression
+;; @ is like quasiquote with an implicit unquote at the leaves of the expression
 ;; constructors
-(define-syntax exp
+(define-syntax @
   (λ (stx) ; intentionally non-hygienic
     (syntax-case* stx (? $ $$) (λ (i1 i2) (eq? (syntax->datum i1) (syntax->datum i2)))
       [(_ $) #''$]
       [(_ $$) #''$$]
       [(_ (b e1))
        (memq (syntax->datum #'b) exp-unops)
-       #'(list 'b (exp e1))]
+       #'(list 'b (@ e1))]
       [(_ (b e1 e2))
        (memq (syntax->datum #'b) exp-binops)
-       #'(list 'b (exp e1) (exp e2))]
+       #'(list 'b (@ e1) (@ e2))]
       [(_ (? e1 e2 e3))
-       #'(list '? (exp e1) (exp e2) (exp e3))]
+       #'(list '? (@ e1) (@ e2) (@ e3))]
       [(_ e) #'e])))
 
 (provide exp-unop?)
