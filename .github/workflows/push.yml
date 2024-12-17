@@ -32,8 +32,8 @@ jobs:
         gcc --version
     - name: Install a86 package
       run: |
-        pwd
-        raco pkg install ../a86/
+	raco pkg install -D ../a86/
+        raco scribble --html a86/scribblings/a86.scrbl
     - name: Install langs package
       run: |
         # This *should* use the locally installed a86
