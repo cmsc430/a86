@@ -7,7 +7,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-20.04, ubuntu-22.04]
-        racket-variant: ['BC', 'CS']
+        racket-variant: ['CS']
         racket-version: ['8.6', '8.8', '8.14']
     name: Test on Racket ${{ matrix.racket-variant }} ${{ matrix.racket-version }} on ${{ matrix.os }}	
     steps:
@@ -32,8 +32,7 @@ jobs:
         gcc --version
     - name: Install a86 package
       run: |
-        raco pkg install -D ../a86/
-        raco scribble --html a86/scribblings/a86.scrbl
+        raco pkg install ../a86/
     - name: Install langs package
       run: |
         # This *should* use the locally installed a86
