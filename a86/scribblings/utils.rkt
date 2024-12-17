@@ -21,18 +21,5 @@
                                           (syntax->datum #'fn)))))
          #`(filebox (link (string-append "code/" fn) (tt fn)) (form #,(datum->syntax #'form s)))))]))
 
-(define-syntax (filebox-include-fake stx)
-  (syntax-case stx ()
-    [(_ form fn . s)
-     #`(filebox (link (string-append "code/" fn) (tt fn)) (form . #,(map syntax-e (syntax->list #'s))))]))
-
 (define (save-file f s)
   (with-output-to-file f (λ () (display s)) #:exists 'replace))
-
-(define (binary i [len 0])
-  (typeset-code #:block? #f #:indent 0
-                (string-append "#b"
-                               (~a (number->string i 2)
-                                   #:left-pad-string "0"
-                                   #:align 'right
-                                   #:min-width len))))
