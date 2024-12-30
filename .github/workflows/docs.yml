@@ -1,0 +1,55 @@
+on:
+  - push
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-22.04
+    name: Build and deploy docs
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+    - name: Install nasm
+      run: sudo apt-get install nasm
+    - name: Install pandoc
+      run: |
+        curl -Ls https://github.com/jgm/pandoc/releases/download/2.11.2/pandoc-2.11.2-1-amd64.deb -o pandoc.deb
+        sudo dpkg -i pandoc.deb
+    - name: Install Racket
+      uses: Bogdanp/setup-racket@v1.10
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        variant: 'CS'
+        version: '8.14'
+    - name: Version info
+      run: |
+        nasm --version
+        gcc --version
+    - name: Install a86 package
+      run: |
+        raco pkg install -D ../a86/
+    - name: Render documentation
+      run: |
+        raco scribble --htmls \        
+          ++xref-in setup/xref load-collections-xref \
+          --redirect-main http://docs.racket-lang.org/ \
+          --dest out/ \
+          a86/scribblings/a86.scrbl
+    - name: Archive documentation
+      uses: actions/upload-pages-artifact@v3
+      with:
+        name: github-pages
+        path: a86/out/a86
+  deploy:
+    needs: build-docs
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Deploy to GitHub pages
+      id: deployment
+      uses: actions/deploy-pages@v4
