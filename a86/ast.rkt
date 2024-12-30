@@ -255,7 +255,7 @@
 
 ;; See https://github.com/cmsc430/a86/issues/2 for discussion
 
-
+(provide label?)
 (define (label? x)
   (and (symbol? x)
        (nasm-label? x)
