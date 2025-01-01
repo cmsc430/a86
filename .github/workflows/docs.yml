@@ -30,14 +30,11 @@ jobs:
         raco pkg install -D ../a86/
     - name: Render documentation
       run: |
-        pwd
-        ls
-        ls a86/
         raco scribble --htmls \        
           ++xref-in setup/xref load-collections-xref \
           --redirect-main http://docs.racket-lang.org/ \
           --dest out/ \
-          a86/scribblings/a86.scrbl
+          a86/a86/scribblings/a86.scrbl
     - name: Archive documentation
       uses: actions/upload-pages-artifact@v3
       with:
