@@ -1,7 +1,10 @@
 #lang racket
 (provide/contract
  [current-objs  (parameter/c (listof path-string?))]
- [asm-interp    (-> (listof instruction?) any/c)]
+ [asm-interp    ;(-> (listof instruction?) any/c)
+  (->* () #:rest (or/c (listof instruction?)
+                       (listof (listof instruction?)))
+       any/c)]
  [asm-interp/io (-> (listof instruction?) string? any/c)])
 
 (define-logger a86)
@@ -22,11 +25,11 @@
 (define current-objs
   (make-parameter '()))
 
-;; Asm -> Value
+;; Asm ... -> Value
 ;; Interpret (by assemblying, linking, and loading) x86-64 code
 ;; Assume: entry point is "entry"
-(define (asm-interp a)
-  (asm-interp/io a #f))
+(define (asm-interp . is)
+  (asm-interp/io is #f))
 
 (define fopen
   (get-ffi-obj "fopen" (ffi-lib #f) (_fun _path _string/utf-8 _-> _pointer)))
@@ -69,7 +72,7 @@
                      r8 r9 r10 r11 r12 r13 r14 r15 instr flags)
                regs)))
 
-;; Asm String -> (cons Value String)
+;; Asm ... String -> (cons Value String)
 ;; Like asm-interp, but uses given string for input and returns
 ;; result with string output
 (define (asm-interp/io a input)
@@ -82,23 +85,44 @@
   (define t.in  (path-replace-extension t.s #".in"))
   (define t.out (path-replace-extension t.s #".out"))
 
+  ;; If the initial label is declared global, jump to that, otherwise
+  ;; generate an initial label at first instruction and jump there
+
+  (define init-label
+    (match (findf Label? a)
+      [(Label ($ l)) l]
+      [_ #f]))
+
+  (define global?
+    (and init-label
+         (ormap (match-lambda
+                  [(Global g) (eq? g init-label)]
+                  [_ #f])
+                a)))
+
+  (define a*
+    (cond
+      [(and init-label global?) (apply prog a)]
+      [else (let ((i (symbol->label (gensym 'init))))
+              (set! init-label i)
+              (apply prog
+                     (Global i)
+                     (Label i)
+                     a))]))
+
   (with-output-to-file t.s
     #:exists 'truncate
     (λ ()
       (parameterize ((current-shared? #t))
         (asm-display (if *debug*?
-                         (debug-transform a)
-                         a)))))
+                         (debug-transform a*)
+                         a*)))))
 
   (nasm t.s t.o)
   (ld t.o t.so)
 
   (define libt.so (ffi-lib t.so))
 
-  (define init-label
-    (match (findf Label? a)
-      [(Label ($ l)) l]
-      [_ (error "no initial label found")]))
 
   (define entry
     (get-ffi-obj init-label libt.so (_fun _pointer _-> _int64)))
@@ -189,7 +213,7 @@
   (raise (exn:nasm (format "~a\n\n~a~a" nasm-msg msg (nasm-offending-line msg))
                    (current-continuation-marks))))
 
-(define (nasm-offending-line msg)  
+(define (nasm-offending-line msg)
   (match (regexp-match
           "(.*):([0-9]+): error: " msg)
     [(list _ (app string->path file) (app string->number line))
@@ -204,7 +228,7 @@
                (loop (read-line) (sub1 i)))))))]
     [_ ""]))
 
-  
+
 ;; run nasm on t.s to create t.o
 (define (nasm t.s t.o)
   (define err-port (open-output-string))

@@ -1,4 +1,6 @@
 #lang racket
+(require (only-in "registers.rkt" register? register-size))
+(provide register?)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Guards
@@ -192,7 +194,7 @@
 (provide @)
 
 ;; @ is like quasiquote with an implicit unquote at the leaves of the expression
-;; constructors
+;; constructors and bound identifiers
 (define-syntax @
   (λ (stx) ; intentionally non-hygienic
     (syntax-case* stx (? $ $$) (λ (i1 i2) (eq? (syntax->datum i1) (syntax->datum i2)))
@@ -206,7 +208,12 @@
        #'(list 'b (@ e1) (@ e2))]
       [(_ (? e1 e2 e3))
        #'(list '? (@ e1) (@ e2) (@ e3))]
-      [(_ e) #'e])))
+      [(_ id)
+       (and (identifier? #'id) (not (identifier-binding #'id)))
+       #''id]
+      [(_ e)
+       #'(let ((x e))
+           (if (exp? x) x (error "not an assembly expression" x)))])))
 
 (provide exp-unop?)
 (define (exp-unop? x)
@@ -221,9 +228,9 @@
 (define-for-syntax exp-unops
   '(- + ~ ! SEG))
 (define exp-binops
-  '(<<< << < <= < <=> > >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
+  '(<<< << < <= <=> >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
 (define-for-syntax exp-binops
-  '(<<< << < <= < <=> > >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
+  '(<<< << < <= <=> >= > >> >>> = == != || \| & && ^^ ^ + - * / // % %%))
 
 ;; Exp -> Exp
 (define (exp-normalize x)
@@ -248,9 +255,13 @@
 
 ;; See https://github.com/cmsc430/a86/issues/2 for discussion
 
+(provide label?)
+(define (label? x)
+  (and (symbol? x)
+       (nasm-label? x)
+       (not (register? x))))
+
 (provide (struct-out $))
-
-
 
 (struct $ (label)
   #:transparent
@@ -406,6 +417,7 @@
 (instruct Mov    (dst src) check:mov)
 (instruct Add    (dst src) check:arith)
 (instruct Sub    (dst src) check:arith)
+(instruct Mul    (src)     check:register)
 (instruct Cmp    (a1 a2)   check:src-dest)
 (instruct Jmp    (x)       check:target)
 (instruct Ja     (x)       check:target)
@@ -493,72 +505,24 @@
       ($? x)
       (integer? x)))
 
-(provide offset? register? label? 64-bit-integer? 32-bit-integer? register-size)
+(provide offset? 64-bit-integer? 32-bit-integer? 16-bit-integer? 8-bit-integer?)
 
 (define offset? Offset?)
 
-(define-syntax-rule
-  (def-registers (group r ...) ...)
-  (begin
-    (begin ; (provide r) ... ; avoid for now
-           (define r 'r) ...
-           (define group
-             (list r ...)))
-    ...))
-
-(def-registers
-  (64-bit-registers     rax rbx rcx rdx rsi  rdi  rbp rsp r8  r9  r10  r11  r12  r13  r14  r15)
-  (32-bit-registers     eax ebx ecx edx esi  edi  ebp esp r8d r9d r10d r11d r12d r13d r14d r15d)
-  (16-bit-registers      ax  bx  cx  dx  si   di  bp  sp  r8w r9w r10w r11w r12w r13w r14w r15w)
-  (8-bit-high-registers  ah  bh  ch  dh)
-  (8-bit-low-registers   al  bl  cl  dl  sil  dil bpl spl r8b r9b r10b r11b r12b r13b r14b r15b))
-
-(define registers
-  (append 64-bit-registers 32-bit-registers 16-bit-registers 8-bit-high-registers 8-bit-low-registers))
-
-(define (make-register-converter group)
-  (define (f x) (or (cdr x) (error "no conversion available")))
-  (lambda (r)
-    (cond
-      [(assq r (map cons 64-bit-registers group)) => f]
-      [(assq r (map cons 32-bit-registers group)) => f]
-      [(assq r (map cons 16-bit-registers group)) => f]
-      [(assq r (map cons 8-bit-low-registers group)) => f]
-      [(assq r (map cons 8-bit-high-registers (take group 4))) => f])))
-
-(provide reg-8-bit-low reg-8-bit-high reg-16-bit reg-32-bit reg-64-bit)
-(define reg-8-bit-low (make-register-converter 8-bit-low-registers))
-(define reg-8-bit-high (make-register-converter (append 8-bit-high-registers (make-list 12 #f))))
-(define reg-16-bit (make-register-converter 16-bit-registers))
-(define reg-32-bit (make-register-converter 32-bit-registers))
-(define reg-64-bit (make-register-converter 64-bit-registers))
-
-(define (register? x)
-  (and (memq x registers)
-       #t))
-
-(define (register-size r)
-  (cond [(memq r 64-bit-registers) 64]
-        [(memq r 32-bit-registers) 32]
-        [(memq r 16-bit-registers) 16]
-        [(memq r  8-bit-high-registers) 8]
-        [(memq r  8-bit-low-registers)  8]))
-
 (define (integer-size x)
-  (integer-length (abs x)))
+  (if (negative? x)
+      (add1 (integer-length (sub1 (- x))))
+      (integer-length x)))
 
-(define (64-bit-integer? x)
-  (and (exact-integer? x)
-       (<= (integer-size x) 64)))
+(define (n-bit-integer n)
+  (λ (x)
+    (and (exact-integer? x)
+         (<= (- (expt 2 (sub1 n))) x (sub1 (expt 2 n))))))
 
-(define (32-bit-integer? x)
-  (and (exact-integer? x)
-       (<= (integer-size x) 32)))
-
-(define (label? x)
-  (and (symbol? x)
-       (nasm-label? x)
-       (not (register? x))))
+(define 64-bit-integer? (n-bit-integer 64))
+(define 32-bit-integer? (n-bit-integer 32))
+(define 16-bit-integer? (n-bit-integer 16))
+(define 8-bit-integer? (n-bit-integer 8))
 
 (provide (rename-out [a86:instruction? instruction?]))
 (define (a86:instruction? x)
