@@ -30,6 +30,7 @@ jobs:
         raco pkg install -D ../a86/
     - name: Render documentation
       run: |
+        find . -name '*scrbl'
         raco scribble --htmls \        
           ++xref-in setup/xref load-collections-xref \
           --redirect-main http://docs.racket-lang.org/ \
