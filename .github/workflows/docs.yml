@@ -3,7 +3,7 @@ on:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     name: Build and deploy docs
     steps:
     - name: Checkout
@@ -15,12 +15,12 @@ jobs:
         curl -Ls https://github.com/jgm/pandoc/releases/download/2.11.2/pandoc-2.11.2-1-amd64.deb -o pandoc.deb
         sudo dpkg -i pandoc.deb
     - name: Install Racket
-      uses: Bogdanp/setup-racket@v1.10
+      uses: Bogdanp/setup-racket@v1.14
       with:
         architecture: 'x64'
         distribution: 'full'
         variant: 'CS'
-        version: '8.14'
+        version: '8.18'
     - name: Version info
       run: |
         nasm --version
