@@ -55,10 +55,37 @@
             (format "~a ; ~.s" s (instruction-annotation i)))
         s)))
 
+;; Mem -> String
+(define (mem->string m)
+  (define (x->string x)
+    (cond [(displacement? x) (displacement->string x)]
+          [(symbol? x) (symbol->string x)]))
+  (match m
+    [(Mem d b i s)
+     (string-append
+      "["
+      (apply string-append (add-between (map x->string (filter identity (list d b i))) " + "))
+      (match s
+        [#f ""]
+        [1  ""]
+        [i (string-append " * " (number->string i))])
+      "]")]))
+
+(define (displacement->string d)
+  (match d
+    [(? integer?) (number->string d)]
+    [(or (Plus ($ l) 0) ($ l))
+     (label-symbol->string l)]
+    [(Plus ($ l) i)
+     (string-append (label-symbol->string l)
+                    " + "
+                    (number->string i))]))
+
 ;; Exp ∪ Reg ∪ Offset -> String
 (define (arg->string e)
   (match e
     [(? register?) (symbol->string e)]
+    [(? Mem?) (mem->string e)]
     [(Offset e)
      (string-append "[" (exp->string e) "]")]
     [_ (exp->string e)]))
