@@ -16,6 +16,13 @@
 ;; Check NASM availability when required to fail fast.
 (check-nasm-available)
 
+;; Bail out if we're not on an x86_64 Racket.
+(unless (eq? 'x86_64 (system-type 'arch))
+  (error 'a86
+         "This library requires x86_64 Racket, but yours is ~a (~a)."
+         (system-type 'arch)
+         (system-type 'os)))
+
 (define *debug*?
   (let ((r (getenv "PLTSTDERR")))
     (and r
