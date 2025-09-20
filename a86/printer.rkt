@@ -58,34 +58,24 @@
 ;; Mem -> String
 (define (mem->string m)
   (define (x->string x)
-    (cond [(displacement? x) (displacement->string x)]
-          [(symbol? x) (symbol->string x)]))
+    (match x
+      [(? integer?) (number->string x)]
+      [(? symbol?) (symbol->string x)]
+      [($ x) (label-symbol->string x)]))
   (match m
-    [(Mem d b i s)
+    [(Mem l o b i s)
      (string-append
-      "["
-      (apply string-append (add-between (map x->string (filter identity (list d b i))) " + "))
+      (apply string-append (add-between (map x->string (filter identity (list l o b i))) " + "))
       (match s
         [#f ""]
         [1  ""]
-        [i (string-append " * " (number->string i))])
-      "]")]))
-
-(define (displacement->string d)
-  (match d
-    [(? integer?) (number->string d)]
-    [(or (Plus ($ l) 0) ($ l))
-     (label-symbol->string l)]
-    [(Plus ($ l) i)
-     (string-append (label-symbol->string l)
-                    " + "
-                    (number->string i))]))
+        [i (string-append " * " (number->string i))]))]))
 
 ;; Exp ∪ Reg ∪ Offset -> String
 (define (arg->string e)
   (match e
     [(? register?) (symbol->string e)]
-    [(? Mem?) (mem->string e)]
+    [(? Mem?) (string-append "[" (mem->string e) "]")]
     [(Offset e)
      (string-append "[" (exp->string e) "]")]
     [_ (exp->string e)]))
@@ -122,6 +112,10 @@
     [(Data n)       (string-append tab (data-section n))]
     [(Extern ($ l)) (string-append tab "extern " (extern-label-decl-symbol->string l))]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
+    [(Lea d (? Mem? m))
+     (string-append tab "lea "
+                    (arg->string d) ", [rel "
+                    (mem->string m) "]")]
     [(Lea d e)
      (string-append tab "lea "
                     (arg->string d) ", [rel "
@@ -131,6 +125,10 @@
                     (symbol->string x)
                     " equ "
                     (number->string c))]
+    [(Dq (? Mem? m))
+     (string-append tab "dq " (mem->string m))]
+    [(Dd (? Mem? m))
+     (string-append tab "dd " (mem->string m))]
     [(Db (? bytes? bs))
      (apply string-append tab "db " (add-between (map number->string (bytes->list bs)) ", "))]
     [_ (common-instruction->string i)]))
