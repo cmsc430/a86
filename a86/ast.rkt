@@ -132,7 +132,7 @@
   (λ (a dst x n)
     (unless (register? dst)
       (error n "expects register; given ~v" dst))
-    (unless (exp? x)
+    (unless (or (exp? x) (Mem? x))
       (error n "expects memory expression; given ~v" x))
     (values a (arg-normalize dst) (arg-normalize x))))
 
@@ -303,85 +303,69 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Effective Addresses
 
-(provide Mem Mem? displacement?)
+(provide Mem Mem?)
 
 ;; type Mem =
-;; | (Mem [Maybe Disp] [Maybe Register] [Maybe Register] [Maybe Scale])
-;; where at least one of disp, base, or index must be given,
+;; | (Mem [Maybe Label] [Maybe Integer] [Maybe Register] [Maybe Register] [Maybe Scale])
+;; where at least one of label, base, or index must be given,
 ;; index cannot be 'rsp
 
 ;; type Scale = 1 | 2 | 4 | 8
 
-;; type Disp =
-;; | Label
-;; | (Plus Label Integer)
+(define (make-Mem . args)
+  (match args
+    [(list (? exact-integer? o) (? register? r))
+     (%mem #f o r #f #f)]
+    [(list (? register? r))
+     (%mem #f #f r #f #f)]
+    [(list (? register? r1) (? register? r2))
+     (%mem #f #f r1 r2 #f)]
+    [(list (or (? label? l) ($ l)))
+     (%mem ($ l) #f #f #f #f)]
+    [(list (? register? r) (? exact-integer? o))
+     (%mem #f o r #f #f)]
+    [(list (or (? label? l) ($ l)) (? exact-integer? o))
+     (%mem ($ l) o #f #f #f)]
 
-(define (displacement? x)
-  (and (normalize-disp x) #t))
-
-(define (normalize-disp d)
-  (match d
-    [($ _) d]
-    [(? label?) ($ d)]
-    [(? integer?) d]
-    [(Plus ($ _) (? integer? i)) d]
-    [(Plus (? label? l) (? integer? i)) (Plus ($ l) i)]
-    [_ #f]))
-
-(define make-Mem
-  (case-lambda
-    [(d b i s) (%mem (normalize-disp d) b i s)]
-    [(x)
-     (match x
-       [(? register? r) (make-Mem #f r #f #f)]
-       [(? displacement? d) (make-Mem d #f #f #f)]
-       [_
-        (error 'Mem "unknown argument type, given ~a" x)])]
-    [(x y)
-     (match* (x y)
-       [((? register?) (? register?))
-        (make-Mem #f x y #f)]
-       [((? displacement?) (? register?))
-        (make-Mem x y #f #f)]
-       [(_ _) (error 'Mem "unknown argument type, given ~a ~a" x y)])]
-    [(x y z)
-     (match* (x y z)
-       [((? register?) (? register?) (? scale?))
-        (make-Mem #f x y z)]
-       [((? displacement?) (? register?) (? scale?))
-        (make-Mem x #f y z)]
-       [((? register?) (? register?) (? scale?))
-        (make-Mem #f x y z)]
-       [(_ _ _) (error 'Mem "unknown argument type, given ~a ~a ~a" x y z)])]))
+    [(list (or (? label? l) ($ l))
+           (? exact-integer? o)
+           (? register? r1)
+           (? register? r2)
+           (? integer? s))
+     (%mem ($ l) o r1 r2 s)]
+    [_
+     (error 'Mem "bad args: ~a" args)]))
 
 (define (scale? x)
   (memq x '(1 2 4 8)))
 
-(struct %mem (disp base index scale)
+(struct %mem (label off base index scale)
   #:reflection-name 'Mem
   #:transparent
   #:guard
-  (λ (disp base index scale name)
-     (when (and disp (not (displacement? disp)))
-       (error name "displacement must be a displacement or #f, given ~v" disp))
-     (when (not (or disp base index))
-       (error name "must have at least one of displacement, base, or index"))
+  (λ (label off base index scale name)
+     (when (and label (not ($? label)))
+       (error name "label must be a label or #f, given ~v" label))
+    (when (and off (not (exact-integer? off)))
+       (error name "offset must be an exact integer or #f, given ~v" off))
      (when (and base (not (register? base)))
        (error name "base must be a register or #f, given ~v" base))
      (when (and index (not (register? index)))
        (error name "index must be a register (other than rsp) or #f, given ~v" index))
      (when (and scale (not (scale? scale)))
        (error name "scale must be 1,2,4,8 or #f, given ~v" scale))
+    (when (not (or label base index))
+       (error name "must have at least one of label, base, or index"))
      (when (eq? index 'rsp)
        (error name "index cannot be rsp"))
-     (values disp base index scale)))
+     (values label off base index scale)))
 
 (define Mem? %mem?)
 
 (define-match-expander Mem
   (λ (stx)
     (syntax-case stx ()
-      [(_ d b i s)  #'(%mem d b i s)]))
+      [(_ l o b i s)  #'(%mem l o b i s)]))
   (λ (stx)
     (syntax-case stx ()
       [m (identifier? #'m) #'make-Mem]
