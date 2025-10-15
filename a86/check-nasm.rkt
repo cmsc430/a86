@@ -61,4 +61,4 @@ HERE
                    (getenv "PATH")
                    (if (and (drracket?) (macos?) (launched-with-finder?))  macosx-msg ""))))
   (unless (nasm-version-2.15+?)
-    (eprintf "nasm 2.15 or later is recommended; some faatures may not work as expected.\n")))
+    (eprintf "nasm 2.15 or later is recommended; some features may not work as expected.\n")))
