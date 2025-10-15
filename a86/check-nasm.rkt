@@ -39,7 +39,9 @@ HERE
 
 (define (nasm-version-2.15+?)
   (match (nasm-version)
-    [(list maj min) (and (>= maj 2) (>= min 15))]
+    [(list maj min)
+     (or (and (= maj 2) (>= min 15))
+         (> maj 2))]
     [_ #f]))
 
 ;; -> [Maybe (list Natural Natural)]
