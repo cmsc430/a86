@@ -37,12 +37,25 @@ HERE
     (and (system "nasm -v")
          (get-output-string (current-output-port)))))
 
-(define (nasm-version-2.15+?)
-  (match (nasm-version)
+;; 'low   =>   [0.00, 2.15)
+;; 'ok    =>   [2.15, 3.00)
+;; 'high  =>   [3.00, ----)
+;; #f     =>   no nasm found
+(define (nasm-version-acceptability ver)
+  (match ver
     [(list maj min)
-     (or (and (= maj 2) (>= min 15))
-         (> maj 2))]
+     (cond
+       [(and (= maj 2)
+             (>= min 15)) 'ok]
+       [(> maj 2)         'high]
+       [(or (< maj 2)
+            (< min 15))   'low])]
     [_ #f]))
+
+(define (nasm-version-2.15+?)
+  (case (nasm-version-acceptability (nasm-version))
+    [(ok high) #t]
+    [else      #f]))
 
 ;; -> [Maybe (list Natural Natural)]
 (define (nasm-version)
@@ -59,6 +72,7 @@ HERE
   (unless v
     (error (format nasm-msg
                    (getenv "PATH")
-                   (if (and (drracket?) (macos?) (launched-with-finder?))  macosx-msg ""))))
-  (unless (nasm-version-2.15+?)
-    (eprintf "nasm 2.15 or later is recommended; some features may not work as expected.\n")))
+                   (if (and (drracket?) (macos?) (launched-with-finder?)) macosx-msg ""))))
+  (case (nasm-version-acceptability v)
+    [(high) (when (macos?) (eprintf "nasm 3.x is not recommended on macOS; please install nasm 2.15+\n"))]
+    [(low) (eprintf "nasm 2.15 or later is recommended; some features may not work as expected.\n")]))
