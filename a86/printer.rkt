@@ -63,7 +63,7 @@
       [(? symbol?) (symbol->string x)]
       [($ x) (label-symbol->string x)]))
   (match m
-    [(Mem l o b i s)
+    [(Mem l b i o s)
      (string-append
       (apply string-append (add-between (map x->string (filter identity (list l o b i))) " + "))
       (match s
