@@ -21,7 +21,7 @@
        (unless (nasm-label? x)
          (error n "label names must conform to nasm restrictions"))
        (values a ($ x))]
-      [($ _)      
+      [($ _)
        (values a x)]
       [_
        (error n "expects valid label name; given ~v" x)])))
@@ -275,7 +275,7 @@
     (values x))
 
   #;#;#;#:methods gen:equal+hash
-  [(define equal-proc     
+  [(define equal-proc
      (λ (i1 i2 equal?)
        (equal? (->symbol i1)
                (->symbol i2))))
@@ -283,7 +283,7 @@
    (define hash2-proc (λ (i hash) (hash (->symbol i))))]
   #:property prop:custom-print-quotable 'never
   #;#;#;#:methods gen:custom-write
-  [(define (write-proc label port mode)     
+  [(define (write-proc label port mode)
      (let ([recur (case mode
                     [(#t) write]
                     [(#f) display]
@@ -293,12 +293,12 @@
              (begin (if (number? mode)
                         (write-string "($ " port)
                         (write-string "#(struct:$ " port))
-                    (recur s port)                        
+                    (recur s port)
                     (if (number? mode)
                         (write-string ")" port)
                         (write-string ")" port)))
              (recur s port)))))])
-  
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Effective Addresses
@@ -306,66 +306,130 @@
 (provide Mem Mem?)
 
 ;; type Mem =
-;; | (Mem [Maybe Label] [Maybe Integer] [Maybe Register] [Maybe Register] [Maybe Scale])
+;; | (Mem [Maybe Label] [Maybe Register] [Maybe Register] [Maybe Integer] [Maybe Scale])
 ;; where at least one of label, base, or index must be given,
 ;; index cannot be 'rsp
 
 ;; type Scale = 1 | 2 | 4 | 8
 
-(define (make-Mem . args)
-  (match args
-    [(list (? exact-integer? o) (? register? r))
-     (%mem #f o r #f #f)]
-    [(list (? register? r))
-     (%mem #f #f r #f #f)]
-    [(list (? register? r1) (? register? r2))
-     (%mem #f #f r1 r2 #f)]
-    [(list (or (? label? l) ($ l)))
-     (%mem ($ l) #f #f #f #f)]
-    [(list (? register? r) (? exact-integer? o))
-     (%mem #f o r #f #f)]
-    [(list (or (? label? l) ($ l)) (? exact-integer? o))
-     (%mem ($ l) o #f #f #f)]
+(define (parse-mem-args orig)
+  (define (parse-mem-args-lab args)
+    (match args
+      [(cons #f args)
+       (cons #f (parse-mem-args-r1 args))]
+      [(cons (or (? label? l) ($ l)) args)
+       (cons ($ l) (parse-mem-args-r1 args))]
+      [_
+       (cons #f (parse-mem-args-r1 args))]))
 
-    [(list (or (? label? l) ($ l))
-           (? exact-integer? o)
-           (? register? r1)
-           (? register? r2)
-           (? integer? s))
-     (%mem ($ l) o r1 r2 s)]
-    [_
-     (error 'Mem "bad args: ~a" args)]))
+  (define (parse-mem-args-r1 args)
+    (match args
+      [(cons #f args)
+       (cons #f (parse-mem-args-r2 args))]
+      [(cons (? register? r1) args)
+       (cons r1 (parse-mem-args-r2 args))]
+      [_
+       (cons #f (parse-mem-args-r2 args))]))
+
+  (define (parse-mem-args-r2 args)
+    (match args
+      [(cons #f args)
+       (cons #f (parse-mem-args-off args))]
+      [(cons (? register? r2) args)
+       (cons r2 (parse-mem-args-off args))]
+      [_
+       (cons #f (parse-mem-args-off args))]))
+
+  (define (parse-mem-args-off args)
+    (match args
+      [(cons #f args)
+       (cons #f (parse-mem-args-scale args))]
+      [(cons (? exact-integer? o) args)
+       (cons o (parse-mem-args-scale args))]
+      [_
+       (cons #f (parse-mem-args-scale args))]))
+
+  (define (parse-mem-args-scale args)
+    (match args
+      [(list #f) (list #f)]
+      [(list (? scale? s)) (list s)]
+      [(list) (list #f)]
+      [else (error "Mem: bad args" orig)]))
+
+  (match (parse-mem-args-lab orig)
+    [(list #f #f #f _ _)
+     (error "Mem: at least one of label, base, or index must be given" orig)]
+    [(list _ _ 'rsp _ _)
+     (error "Mem: index cannot be rsp")]
+    [as
+     (apply %mem as)]))
+
+;; Given list of 5 fields, construct unambiguous argument list with
+;; fewest #f's possible
+(define (unparse-mem-args args)
+  (define (unparse-mem-args-lab args)
+    (match args
+      [(cons #f args)
+       (unparse-mem-args-r1 args)]
+      [(cons l args)
+       (cons l (unparse-mem-args-r1 args))]))
+
+  (define (unparse-mem-args-r1 args)
+    (match args
+      [(cons #f (cons #f args))
+       (unparse-mem-args-off args)]
+      [(cons #f (cons r args))
+       (cons #f (cons r (unparse-mem-args-off args)))]
+      [(cons r (cons #f args))
+       (cons r (unparse-mem-args-off args))]
+      [(cons r1 (cons r2 args))
+       (cons r1 (cons r2 (unparse-mem-args-off args)))]))
+
+  (define (unparse-mem-args-off args)
+    (match args
+      [(list #f #f) '()]
+      [(list o #f) (list o)]
+      [(list o s) (list o s)]))
+  (unparse-mem-args-lab args))
+
+(define (make-Mem . args)
+  (parse-mem-args args))
 
 (define (scale? x)
   (memq x '(1 2 4 8)))
 
-(struct %mem (label off base index scale)
+(struct %mem (label base index off scale)
   #:reflection-name 'Mem
   #:transparent
-  #:guard
-  (λ (label off base index scale name)
-     (when (and label (not ($? label)))
-       (error name "label must be a label or #f, given ~v" label))
-    (when (and off (not (exact-integer? off)))
-       (error name "offset must be an exact integer or #f, given ~v" off))
-     (when (and base (not (register? base)))
-       (error name "base must be a register or #f, given ~v" base))
-     (when (and index (not (register? index)))
-       (error name "index must be a register (other than rsp) or #f, given ~v" index))
-     (when (and scale (not (scale? scale)))
-       (error name "scale must be 1,2,4,8 or #f, given ~v" scale))
-    (when (not (or label base index))
-       (error name "must have at least one of label, base, or index"))
-     (when (eq? index 'rsp)
-       (error name "index cannot be rsp"))
-     (values label off base index scale)))
+  #:property prop:custom-print-quotable 'never
+  #:methods gen:custom-write
+  [(define (write-proc mem port mode) (mem-print mem port mode))]
+  )
+
+(define (mem-print mem port mode)
+  (if (number? mode)
+      (write-string "(" port)
+      (write-string "#(struct:" port))
+  (write-string "Mem " port)
+  (let ([recur (case mode
+                 [(#t) write]
+                 [(#f) display]
+                 [else (lambda (p port) (print p port mode))])])
+    (for-each
+     (λ (t) (t))
+     (add-between
+      (map
+       (λ (x) (λ () (recur x port)))
+       (unparse-mem-args (rest (vector->list (struct->vector mem)))))
+      (λ () (write-string " " port)))))
+  (write-string ")" port))
 
 (define Mem? %mem?)
 
 (define-match-expander Mem
   (λ (stx)
     (syntax-case stx ()
-      [(_ l o b i s)  #'(%mem l o b i s)]))
+      [(_ l b i o s)  #'(%mem l b i o s)]))
   (λ (stx)
     (syntax-case stx ()
       [m (identifier? #'m) #'make-Mem]
@@ -451,7 +515,7 @@
                 #:property prop:custom-print-quotable 'never
                 #:methods gen:custom-write
                 [(define write-proc
-		   (instr-print 'Name)
+                   (instr-print 'Name)
                    #;(make-constructor-style-printer
                     (lambda (obj) 'Name)
                     (lambda (obj)
