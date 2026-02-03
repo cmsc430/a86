@@ -240,11 +240,11 @@
   (define fmt (if (eq? (system-type 'os) 'macosx) 'macho64 'elf64))
   (define prefix
     (if (eq? (system-type 'os) 'macosx)
-        "'_'"
-        "''"))
+        "arch -x86_64"
+        ""))
 
   (unless (parameterize ((current-error-port err-port))
-            (system (format "nasm -f ~a --gprefix ~a ~a -o ~a" fmt prefix t.s t.o)))
+            (system (format "~a clang -c ~a -o ~a" prefix t.s t.o)))
     (nasm:error (get-output-string err-port))))
 
 (struct exn:ld exn:fail:user ())

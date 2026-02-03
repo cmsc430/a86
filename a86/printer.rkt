@@ -18,24 +18,45 @@
 
 (define (comment->string c)
   (match c
-    [(% s)   (string-append (make-string 32 #\space) "; " s)]
-    [(%% s)  (string-append tab ";; " s)]
-    [(%%% s) (string-append ";;; " s)]))
+    [(% s)   (string-append (make-string 32 #\space) "# " s)]
+    [(%% s)  (string-append tab "## " s)]
+    [(%%% s) (string-append "### " s)]))
 
 (define current-extern-labels (make-parameter '()))
 
 ;; Label -> String
-(define (label-symbol->string s)
+;; prefix with _ for Mac
+(define label-symbol->string
+  (match (system-type 'os)
+    ['macosx (λ (s) (string-append "_" (symbol->string s)))]
+    [_ (λ (s) (symbol->string s))]))
+
+       ;(if (and (current-shared?) (memq s (current-extern-labels)))
+           ; hack for ELF64 shared libraries in service of
+           ; calling external functions in asm-interp
+           ;(string-append "$" (symbol->string s) " wrt ..plt")
+           ;(symbol->string s)))]))
+
+(define (label-symbol->string_old s)
   ;; This should maybe be handled specially in the printing of Call rather
   ;; than in every label...
   (if (and (eq? (system-type 'os) 'unix) (current-shared?) (memq s (current-extern-labels)))
       ; hack for ELF64 shared libraries in service of
       ; calling external functions in asm-interp
-      (string-append "$" (symbol->string s) " wrt ..plt")
-      (string-append "$" (symbol->string s))))
+      ;(string-append "$" (symbol->string s) " wrt ..plt")
+       (symbol->string s)
+      (string-append "_" (symbol->string s))))
+
+
+(define extern-label-decl-symbol->string-new
+  (match (system-type 'os)
+    ['macosx  (λ (s) (string-append "_" (symbol->string s)))]
+    [_     (λ (s)
+       (symbol->string s))]))
+
 
 (define (extern-label-decl-symbol->string s)
-  (string-append "$" (symbol->string s)))
+  (string-append "" (symbol->string s)))
   
 ;; Instruction -> String
 (define (common-instruction->string i)
@@ -76,6 +97,8 @@
   (match e
     [(? register?) (symbol->string e)]
     [(? Mem?) (string-append "[" (mem->string e) "]")]
+    [(Offset (? register? r)) (string-append "[" (symbol->string r) "]")]
+    [(Offset ($ (? label? r))) (string-append "[" (label-symbol->string r) " + rip]")]
     [(Offset e)
      (string-append "[" (exp->string e) "]")]
     [_ (exp->string e)]))
@@ -95,30 +118,32 @@
 
 (define (text-section n)
   (match (system-type 'os)
-    ['macosx (format "section __TEXT,~a align=16" n)]
-    [_       (format "section ~a progbits alloc exec nowrite align=16" n)]))
+    ['macosx (format ".section __TEXT,~a \n\t .p2align 4" n)]
+    [_       (format ".section ~a progbits alloc exec nowrite align=16" n)]))
 
 (define (data-section n)
   (match (system-type 'os)
-    ['macosx (format "section __DATA,~a align=8" n)]
-    [_       (format "section ~a progbits alloc noexec write align=8" n)]))
+    ['macosx (format ".section __DATA,~a \n\t .p2align 3" n)]
+    [_       (format ".section ~a progbits alloc noexec write align=8" n)]))
 
 ;; Instruction -> String
 (define (simple-instr->string i)
   (match i
-    [(Text)         (string-append tab "section .text")]
+    [(Text)         (string-append tab ".text")]
     [(Text n)       (string-append tab (text-section n))]
-    [(Data)         (string-append tab "section .data align=8")] ; 8-byte aligned data
+    [(Data)         (string-append tab ".data\n\t .p2align 3")] ; 8-byte aligned data
     [(Data n)       (string-append tab (data-section n))]
-    [(Extern ($ l)) (string-append tab "extern " (extern-label-decl-symbol->string l))]
+    [(Extern ($ l)) (string-append tab ".extern " (extern-label-decl-symbol->string l))]
+    [(Global ($ l))       (string-append tab ".global " (label-symbol->string l))]
+    ;;[(Label ($ l))  (string-append "_" (symbol->string l) ":")]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
     [(Lea d (? Mem? m))
      (string-append tab "lea "
-                    (arg->string d) ", [rel "
+                    (arg->string d) ", [rip + "  
                     (mem->string m) "]")]
     [(Lea d e)
      (string-append tab "lea "
-                    (arg->string d) ", [rel "
+                    (arg->string d) ", [rip + "
                     (arg->string e) "]")]
     [(Equ x c)
      (string-append tab
@@ -126,17 +151,21 @@
                     " equ "
                     (number->string c))]
     [(Dq (? Mem? m))
-     (string-append tab "dq " (mem->string m))]
+     (string-append tab ".quad " (mem->string m))]
+    [(Dq  m)
+     (string-append tab ".quad " (number->string m))]
     [(Dd (? Mem? m))
-     (string-append tab "dd " (mem->string m))]
+     (string-append tab ".long " (mem->string m))]
+    [(Dd  m)
+     (string-append tab ".long " (number->string m))]
     [(Db (? bytes? bs))
-     (apply string-append tab "db " (add-between (map number->string (bytes->list bs)) ", "))]
+     (apply string-append tab ".byte " (add-between (map number->string (bytes->list bs)) ", "))]
     [_ (common-instruction->string i)]))
 
 (define (line-comment i s)
   (let ((i-str (simple-instr->string i)))
     (let ((pad (make-string (max 1 (- 32 (string-length i-str))) #\space)))
-      (string-append i-str pad "; " s))))
+      (string-append i-str pad "# " s))))
 
 ;; [Listof Instr] -> Void
 (define (instrs-display a)
@@ -173,8 +202,8 @@
        (begin
          (write-string (string-append
                         ; tab "global " (label-symbol->string g) "\n"
-                        tab "default rel\n"
-                        tab "section .text\n"))
+                        tab ".intel_syntax noprefix\n"
+                        tab ".text\n"))
          (instrs-display a))]
       [_
        (instrs-display a)
