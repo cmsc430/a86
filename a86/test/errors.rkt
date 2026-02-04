@@ -62,7 +62,7 @@
 (check-not-exn       (thunk (%% "commentmov rax 42")))
 (check-not-exn       (thunk (%%% "commentmov rax 42")))
 
-;; Check nasm label conventions
+;; Check assembly label conventions
 (check-exn exn:fail? (thunk (Jmp 'foo-bar)))
 
 ;; Check arguments

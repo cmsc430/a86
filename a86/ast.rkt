@@ -18,8 +18,8 @@
   (λ (a x n)
     (match x
       [(? symbol?)
-       (unless (nasm-label? x)
-         (error n "label names must conform to nasm restrictions"))
+       (unless (asm-label? x)
+         (error n "label names must conform to restrictions"))
        (values a ($ x))]
       [($ _)
        (values a x)]
@@ -38,7 +38,7 @@
     (match x
       [(? offset?) (values a (exp-normalize x))]
       [(? register?) (values a x)]
-      [(? nasm-label? x) (values a ($ x))]
+      [(? asm-label? x) (values a ($ x))]
       [($ _) (values a x)]
       [_
        (error n "expects label, register, or offset; given ~v" x)])))
@@ -187,7 +187,7 @@
     [(list (? exp-unop?) (? exp?)) #t]
     [(list (? exp-binop?) (? exp?) (? exp?)) #t]
     [($ _) #t]
-    [(? nasm-label?) #t]
+    [(? asm-label?) #t]
     [(? 64-bit-integer?) #t]
     [_ #f]))
 
@@ -236,7 +236,7 @@
 (define (exp-normalize x)
   (match x
     [(? register?) x]
-    [(? nasm-label?) ($ x)]
+    [(? asm-label?) ($ x)]
     [(? Mem?) x]
     ;[(Offset e1) (Offset (exp-normalize e1))]
     [(Plus e1 e2)
@@ -259,7 +259,7 @@
 (provide label?)
 (define (label? x)
   (and (symbol? x)
-       (nasm-label? x)
+       (asm-label? x)
        (not (register? x))))
 
 (provide (struct-out $))
@@ -270,8 +270,8 @@
   (λ (x n)
     (unless (symbol? x)
       (error n "expects symbol; given ~v" x))
-    (unless (nasm-label? x)
-      (error n "label names must conform to nasm restrictions"))
+    (unless (asm-label? x)
+      (error n "label names must conform to restrictions"))
     (values x))
 
   #;#;#;#:methods gen:equal+hash
@@ -638,7 +638,7 @@
            (exp? (Plus-e1 x))
            (exp? (Plus-e2 x)))
       (register? x)
-      (nasm-label? x)
+      (asm-label? x)
       ($? x)
       (integer? x)))
 
@@ -746,7 +746,7 @@
 
 ;; (U Instruction Asm) ... -> Asm
 ;; Construct a "program", does some global well-formedness checking to help
-;; prevent confusing error messages as the nasm level
+;; prevent confusing error messages as the assembler level
 (define (prog . xs)
   (let ((p (apply seq xs)))
     (check-unique-label-decls p)
@@ -787,7 +787,7 @@
      (extern-decls asm)]))
 
 ;; Any -> Boolean
-(define (nasm-label? s)
+(define (asm-label? s)
   (and (symbol? s)
        (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s))))
 
@@ -848,7 +848,7 @@
 ;; Symbol to Label
 
 ;; Symbol -> Label
-;; Produce a symbol that is a valid Nasm label
+;; Produce a symbol that is a valid assembly label
 ;; Guarantees that (eq? s1 s2) <=> (eq? (symbol->label s1) (symbol->label s1))
 (provide symbol->label)
 (define (symbol->label s)

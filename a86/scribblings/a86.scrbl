@@ -116,7 +116,7 @@ x86-64 assembly programs in Racket:
  ; compute 5!
  (asm-interp (fact-program 5))
 
- ; render 5! program in NASM syntax
+ ; render 5! program in asm syntax
  (asm-display (fact-program 5))
 )
 
@@ -172,7 +172,7 @@ be well-formed, which means:
  form a program.
 
  This function is useful to do some early error checking
- over whole programs and can help avoid confusing NASM
+ over whole programs and can help avoid confusing assembler
  errors. Unlike @racket[seq] it should be called at the
  outermost level of a function that produces a86 code and not
  nested.
@@ -215,7 +215,7 @@ correspond to actual execuable @secref{Instructions}.
 
  Defines the given label, which is used as a symbolic name for @emph{this}
  location in the program. Each defined label in a
- program must be unique.  Label names must follow the NASM restrictions
+ program must be unique.  Label names must follow the restrictions
  on valid label names (see @racket[label?] for details).
 
  @ex[
@@ -507,13 +507,13 @@ if the given register has no corresponding alias.
 @subsection{Labels}
 
 Labels are represented as symbols (or @racket[$] structures)
-that must conform to the naming restriction imposed by NASM,
+that must conform to the naming restriction imposed by the assembler,
 so not all symbols are valid label names.
 
 @defproc[(label? [x any/c]) boolean?]{
  A predicate for label @emph{names}, i.e. symbols which are not register names.
 
- Labels must also follow the NASM restrictions on label names: "Valid
+ Labels must also follow the restrictions on label names: "Valid
  characters in labels are letters, numbers, @tt{_}, @tt{$}, @tt{#}, @tt{@"@"}, @tt{~}, @tt{.}, and
  @tt{?}. The only characters which may be used as the first character of an
  identifier are letters, @tt{.} (with special meaning), @tt{_}
@@ -531,7 +531,7 @@ so not all symbols are valid label names.
 
 @defstruct*[$ ([l symbol?])]{
 Structure for representing labels.  Useful when you need to refer to a label
-that has a name conflicting with register name or other reserved keyword in NASM.
+that has a name conflicting with register name or other reserved keyword.
 
 @ex[(Label ($ 'rax))]
 
@@ -680,7 +680,7 @@ This section describes the instruction set of a86.
 
 @defproc[(symbol->label [s symbol?]) label?]{
 
-  Returns a modified form of a symbol that follows NASM label conventions.
+  Returns a modified form of a symbol that follows assembler label conventions.
 
   @ex[
   (let ([l (symbol->label 'my-great-label)])
@@ -1750,7 +1750,7 @@ written to with the value 42, before being dereferenced and returned:
 
 @defproc[(asm-display [is (listof instruction?)]) void?]{
 
- Prints an a86 program to the current output port in NASM syntax.
+ Prints an a86 program to the current output port in Intel syntax.
 
  @ex[
  (asm-display (prog (Global 'entry)
@@ -1763,7 +1763,7 @@ written to with the value 42, before being dereferenced and returned:
 
 @defproc[(asm-string [is (listof instruction?)]) string?]{
 
- Converts an a86 program to a string in NASM syntax.
+ Converts an a86 program to a string in Intel syntax.
 
  @ex[
  (asm-string (prog (Global 'entry)
@@ -1792,7 +1792,7 @@ If you have code written in a86 that you would like to
 execute directly, you should instead use the
 @seclink["Printing"]{printing} facilities to save the
 program to a file and then use an external assembler (e.g.
-@tt{nasm}) and linker to produce either object files or
+@tt{clang}) and linker to produce either object files or
 executables. It's possible to use
 @other-doc['(lib "scribblings/foreign/foreign.scrbl")] to
 interact with those files from within Racket.

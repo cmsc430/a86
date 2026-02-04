@@ -9,12 +9,12 @@
 
 (define-logger a86)
 
-(require "printer.rkt" "ast.rkt" "callback.rkt" "check-nasm.rkt"
+(require "printer.rkt" "ast.rkt" "callback.rkt" "check-assembler.rkt"
          (rename-in ffi/unsafe [-> _->]))
 (require (submod "printer.rkt" private))
 
-;; Check NASM availability when required to fail fast.
-(check-nasm-available)
+;; Check clang availability when required to fail fast.
+(check-clang-available)
 
 ;; Bail out if we're not on an x86_64 Racket.
 (unless (eq? 'x86_64 (system-type 'arch))
@@ -84,7 +84,7 @@
 
   (log-a86-info (~v a))
 
-  (define t.s   (make-temporary-file "nasm~a.s"))
+  (define t.s   (make-temporary-file "clang-~a.s"))
   (define t.o   (path-replace-extension t.s #".o"))
   (define t.so  (path-replace-extension t.s #".so"))
   (define t.in  (path-replace-extension t.s #".in"))
@@ -123,7 +123,7 @@
                          (debug-transform a*)
                          a*)))))
 
-  (nasm t.s t.o)
+  (clang t.s t.o)
   (ld t.o t.so)
 
   (define libt.so (ffi-lib t.so))
@@ -206,24 +206,24 @@
          (add-between (map (lambda (s) (string-append "\"" s "\"")) xs)
                       " ")))
 
-;;; Utilities for calling nasm and linker with informative error messages
+;;; Utilities for calling clang and linker with informative error messages
 
-(struct exn:nasm exn:fail:user ())
-(define nasm-msg
+(struct exn:clang exn:fail:user ())
+(define assembly-error-msg
   (string-append
    "assembly error: make sure to use `prog` to construct an assembly program\n"
    "if you did and still get this error; please share with course staff."))
 
-(define (nasm:error msg)
-  (raise (exn:nasm (format "~a\n\n~a~a" nasm-msg msg (nasm-offending-line msg))
-                   (current-continuation-marks))))
+(define (clang:error msg)
+  (raise (exn:clang (format "~a\n\n~a~a" assembly-error-msg msg (assembly-offending-line msg))
+                    (current-continuation-marks))))
 
-(define (nasm-offending-line msg)
+(define (assembly-offending-line msg)
   (match (regexp-match
           "(.*):([0-9]+): error: " msg)
     [(list _ (app string->path file) (app string->number line))
      (format
-      "\nnasm offending line: ~a"
+      "\noffending line: ~a"
       (with-input-from-file file
         (thunk
          (let loop ([l (read-line)]
@@ -234,8 +234,8 @@
     [_ ""]))
 
 
-;; run nasm on t.s to create t.o
-(define (nasm t.s t.o)
+;; run clang on t.s to create t.o
+(define (clang t.s t.o)
   (define err-port (open-output-string))
   (define fmt (if (eq? (system-type 'os) 'macosx) 'macho64 'elf64))
   (define prefix
@@ -245,7 +245,7 @@
 
   (unless (parameterize ((current-error-port err-port))
             (system (format "~a clang -c ~a -o ~a" prefix t.s t.o)))
-    (nasm:error (get-output-string err-port))))
+    (clang:error (get-output-string err-port))))
 
 (struct exn:ld exn:fail:user ())
 (define (ld:error msg)

@@ -1,5 +1,5 @@
 #lang racket
-(require rackunit "../ast.rkt" "../interp.rkt" "../check-nasm.rkt")
+(require rackunit "../ast.rkt" "../interp.rkt" "../check-assembler.rkt")
 
 (define (ev e)
   (asm-interp (prog (Global 'entry) (Label 'entry) (Mov 'rax e) (Ret))))
@@ -9,7 +9,7 @@
 (check-equal? (ev '(! 0)) 1)
 (check-equal? (ev '(~ 0)) -1)
 
-(when (nasm-version-2.15+?)
+(when (clang-version-16+?)
   (check-equal? (ev '(< 1 2)) 1)
   (check-equal? (ev '(< 2 1)) 0)
   (check-equal? (ev '(? 1 2 3)) 2)
