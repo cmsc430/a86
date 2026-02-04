@@ -2,7 +2,7 @@
 
 (provide check-clang-available
          clang-version
-         clang-version-16+?)
+         clang-version-14+?)
 
 (require racket/gui/dynamic)
 
@@ -44,17 +44,17 @@ HERE
                              "")))
          (get-output-string (current-output-port)))))
 
-(define (clang-version-16+?)
+(define (clang-version-14+?)
   (match (clang-version)
     [(list major _ _)
-     (>= major 16)]
+     (>= major 14)]
     [_ #f]))
 
 ;; -> [Maybe (list Natural Natural Natural)]
 (define (clang-version)
   (match (clang-version-string)
     [#f #f]
-    [(regexp #rx"version ([0-9]+)\\.([0-9]+)\\.([0-9]+) "
+    [(regexp #rx"clang version ([0-9]+)\\.([0-9]+)\\.([0-9]+)"
              (list _
                    (app string->number major)
                    (app string->number minor)
@@ -68,5 +68,5 @@ HERE
     (error (format clang-missing-msg
                    (getenv "PATH")
                    (if (and (drracket?) (macos?) (launched-with-finder?)) finder-launch-msg ""))))
-  (unless (clang-version-16+?)
+  (unless (clang-version-14+?)
     (eprintf "clang 16.0.0 or later is recommended; some features may not work as expected.\n")))

@@ -9,7 +9,7 @@
 (check-equal? (ev '(! 0)) 1)
 (check-equal? (ev '(~ 0)) -1)
 
-(when (clang-version-16+?)
+(when (clang-version-14+?)
   (check-equal? (ev '(< 1 2)) 1)
   (check-equal? (ev '(< 2 1)) 0)
   (check-equal? (ev '(? 1 2 3)) 2)
