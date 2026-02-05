@@ -37,26 +37,10 @@
            ;(string-append "$" (symbol->string s) " wrt ..plt")
            ;(symbol->string s)))]))
 
-(define (label-symbol->string_old s)
-  ;; This should maybe be handled specially in the printing of Call rather
-  ;; than in every label...
-  (if (and (eq? (system-type 'os) 'unix) (current-shared?) (memq s (current-extern-labels)))
-      ; hack for ELF64 shared libraries in service of
-      ; calling external functions in asm-interp
-      ;(string-append "$" (symbol->string s) " wrt ..plt")
-       (symbol->string s)
-      (string-append "_" (symbol->string s))))
-
-
-(define extern-label-decl-symbol->string-new
+(define extern-label-decl-symbol->string
   (match (system-type 'os)
     ['macosx  (λ (s) (string-append "_" (symbol->string s)))]
-    [_     (λ (s)
-       (symbol->string s))]))
-
-
-(define (extern-label-decl-symbol->string s)
-  (string-append "" (symbol->string s)))
+    [_     (λ (s) (symbol->string s))]))
   
 ;; Instruction -> String
 (define (common-instruction->string i)
