@@ -66,7 +66,7 @@
     (match x
       [(? integer?) (number->string x)]
       [(? symbol?) (symbol->string x)]
-      [($ x) (label-symbol->string x)]))
+      [($ x) (string-append (label-symbol->string x)  " + rip ")]))
   (match m
     [(Mem l b i o s)
      (string-append
