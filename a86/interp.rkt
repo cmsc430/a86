@@ -220,17 +220,22 @@
 
 (define (assembly-offending-line msg)
   (match (regexp-match
-          "(.*):([0-9]+): error: " msg)
-    [(list _ (app string->path file) (app string->number line))
-     (format
-      "\noffending line: ~a"
+          "(.*):([0-9]+):([0-9]+): error: " msg)
+    [(list _ (app string->path file) (app string->number line) (app string->number offset))
+     (define line-text
       (with-input-from-file file
         (thunk
          (let loop ([l (read-line)]
                     [i line])
            (if (= i 1)
                l
-               (loop (read-line) (sub1 i)))))))]
+               (loop (read-line) (sub1 i)))))))
+     (match (regexp-match "[ ]*(.*)" line-text)
+       [(list _ trimmed-line)
+        (format
+         "\noffending line: ~a\n                ~a^"
+         trimmed-line
+         (make-string offset #\space))])]
     [_ ""]))
 
 
