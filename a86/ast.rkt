@@ -61,8 +61,12 @@
       (error n "expects register; given ~v" a1))
     (unless (or (exact-integer? a2) (register? a2) (offset? a2))
       (error n "expects exact integer, register, or offset; given ~v" a2))
-    (when (and (exact-integer? a2) (> (integer-size a2) 32))
-      (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-size a2)))
+    (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
+      (error n "literal must not exceed register size (~v-bits); given ~v (~v bits)"
+             (register-size a1) a2 (integer-size a2)))
+    (when (and (register? a1) (= (register-size a1) 64) (exact-integer? a2) (> (integer-length a2) 31))
+      (error n "literal must not exceed 32-bits signed; given ~v (~v bits signed); go through a register instead"
+             a2 (add1 (integer-length a2))))
     (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
       (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
              a1 (register-size a1)
@@ -83,8 +87,12 @@
       (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
     (when (and (offset? a1) (offset? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
-    (when (and (exact-integer? a2) (> (integer-size a2) 32))
-      (error n "literal must not exceed 32-bits; given ~v (~v bits); go through a register instead" a2 (integer-size a2)))
+    (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
+      (error n "literal must not exceed register size (~v-bits); given ~v (~v bits)"
+             (register-size a1) a2 (integer-size a2)))
+    (when (and (register? a1) (= (register-size a1) 64) (exact-integer? a2) (> (integer-length a2) 31))
+      (error n "literal must not exceed 32-bits signed; given ~v (~v bits signed); go through a register instead"
+             a2 (add1 (integer-length a2))))
     (when (and (offset? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
     (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
