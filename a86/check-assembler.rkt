@@ -38,7 +38,7 @@ HERE
 (define (clang-version-string)
   (parameterize ([current-output-port (open-output-string)]
                  [current-error-port (open-output-string)])
-    (and (system (format "~aclang -v 2>&1"
+    (and (system (format "~aclang --version 2>&1"
                          (if (macos?)
                              "arch -x86_64 "
                              "")))
