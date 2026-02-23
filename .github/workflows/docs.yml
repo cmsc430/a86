@@ -1,13 +1,14 @@
-on:
-  - push
+name: Deploy Docs
+on: [push, workflow_dispatch]
 
 jobs:
   build-docs:
-    with:
-      os: ubuntu-24.04
-      racket-variant: 'CS'
-      racket-version: '9.0'
-    runs-on: ${{ inputs.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        racket-variant: ['CS']
+        racket-version: ['9.0']
+    runs-on: ${{ matrix.os }}
     name: Build and deploy docs
 
     steps:
@@ -20,8 +21,8 @@ jobs:
       with:
         architecture: 'x64'
         distribution: 'full'
-        variant: ${{ inputs.racket-variant }}
-        version: ${{ inputs.racket-version }}
+        variant: ${{ matrix.racket-variant }}
+        version: ${{ matrix.racket-version }}
 
     - name: Install clang
       run: |
@@ -45,7 +46,7 @@ jobs:
           ~/.cache/racket
           ~/.local/share/racket
           ~/Library/Caches/Racket
-        key: racket-${{ inputs.racket-variant }}-${{ inputs.racket-version }}-${{ inputs.os }}
+        key: racket-${{ matrix.racket-variant }}-${{ matrix.racket-version }}-${{ matrix.os }}
 
     - name: Install a86 package
       run: |
@@ -76,7 +77,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     if: github.ref == 'refs/heads/main'
+
     steps:
+
     - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4

@@ -1,20 +1,21 @@
-on:
-  - push
+name: Build and Test
+on: [push, workflow_dispatch]
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
         racket-variant: ['CS']
-        racket-version: ['8.6', '8.8', '8.10', '8.14', '8.18']
-    name: Test on Racket ${{ matrix.racket-variant }} ${{ matrix.racket-version }} on ${{ matrix.os }}	
+        racket-version: ['8.6', '8.10', '8.14', '8.18', 'stable', 'current']
+    runs-on: ${{ matrix.os }}
+    name: OS ${{ matrix.os }} / Racket ${{ matrix.racket-version }}
+
     steps:
+
     - name: Checkout
       uses: actions/checkout@main
-    - name: Install nasm
-      run: sudo apt-get install nasm
+
     - name: Install Racket
       uses: Bogdanp/setup-racket@v1.14
       with:
@@ -22,17 +23,35 @@ jobs:
         distribution: 'full'
         variant: ${{ matrix.racket-variant }}
         version: ${{ matrix.racket-version }}
+
+    - name: Install clang
+      run: |
+        sudo apt install -y clang libssl-dev
+
     - name: Version info
       run: |
-        nasm --version
+        clang --version
         gcc --version
+
+    - name: Cache Racket packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.racket
+          ~/.cache/racket
+          ~/.local/share/racket
+          ~/Library/Caches/Racket
+        key: racket-${{ matrix.racket-variant }}-${{ matrix.racket-version }}-${{ matrix.os }}
+
     - name: Install a86 package
       run: |
-        raco pkg install -D ../a86/
+        raco pkg install --no-docs ../a86/
+
     - name: Install langs package
       run: |
         # This *should* use the locally installed a86
         raco pkg install --auto 'https://github.com/cmsc430/langs.git?#main'
+
     - name: Run tests
       run: |
         xvfb-run raco test -p a86
