@@ -3,31 +3,54 @@ on:
 
 jobs:
   build-docs:
-    runs-on: ubuntu-24.04
+    with:
+      os: ubuntu-24.04
+      racket-variant: 'CS'
+      racket-version: '9.0'
+    runs-on: ${{ inputs.os }}
     name: Build and deploy docs
+
     steps:
+
     - name: Checkout
       uses: actions/checkout@main
-    - name: Install nasm
-      run: sudo apt-get install nasm
-    - name: Install pandoc
-      run: |
-        curl -Ls https://github.com/jgm/pandoc/releases/download/2.11.2/pandoc-2.11.2-1-amd64.deb -o pandoc.deb
-        sudo dpkg -i pandoc.deb
+
     - name: Install Racket
       uses: Bogdanp/setup-racket@v1.14
       with:
         architecture: 'x64'
         distribution: 'full'
-        variant: 'CS'
-        version: '8.18'
+        variant: ${{ inputs.racket-variant }}
+        version: ${{ inputs.racket-version }}
+
+    - name: Install clang
+      run: |
+        sudo apt install -y clang libssl-dev
+
+    - name: Install pandoc
+      run: |
+        curl -Ls https://github.com/jgm/pandoc/releases/download/2.11.2/pandoc-2.11.2-1-amd64.deb -o pandoc.deb
+        sudo dpkg -i pandoc.deb
+
     - name: Version info
       run: |
-        nasm --version
+        clang --version
         gcc --version
+
+    - name: Cache Racket packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.racket
+          ~/.cache/racket
+          ~/.local/share/racket
+          ~/Library/Caches/Racket
+        key: racket-${{ inputs.racket-variant }}-${{ inputs.racket-version }}-${{ inputs.os }}
+
     - name: Install a86 package
       run: |
-        raco pkg install -D ../a86/
+        raco pkg install --no-docs ../a86/
+
     - name: Render documentation
       run: |
         find . -name '*scrbl'
@@ -36,14 +59,16 @@ jobs:
           --redirect-main http://docs.racket-lang.org/ \
           --dest out/ \
           a86/scribblings/a86.scrbl
+
     - name: Archive documentation
       uses: actions/upload-pages-artifact@v3
       with:
         name: github-pages
         path: out/a86
+
   deploy:
     needs: build-docs
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
@@ -52,6 +77,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     if: github.ref == 'refs/heads/main'
     steps:
-    - name: Deploy to GitHub pages
+    - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
