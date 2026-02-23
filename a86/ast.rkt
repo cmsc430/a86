@@ -36,7 +36,7 @@
 (define check:target
   (λ (a x n)
     (match x
-      [(? offset?) (values a (exp-normalize x))]
+      [(? Mem?) (values a (exp-normalize x))]
       [(? register?) (values a x)]
       [(? asm-label? x) (values a ($ x))]
       [($ _) (values a x)]
@@ -47,7 +47,7 @@
   (λ (a a1 a2 n)
     (unless (register? a1)
       (error n "expects register; given ~v" a1))
-    (unless (or (register? a2) (offset? a2))
+    (unless (or (register? a2) (Mem? a2))
       (error n "expects register or offset; given ~v" a2))
     (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
       (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
@@ -59,7 +59,7 @@
   (λ (a a1 a2 n)
     (unless (register? a1)
       (error n "expects register; given ~v" a1))
-    (unless (or (exact-integer? a2) (register? a2) (offset? a2))
+    (unless (or (exact-integer? a2) (register? a2) (Mem? a2))
       (error n "expects exact integer, register, or offset; given ~v" a2))
     (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
       (error n "literal must not exceed register size (~v-bits); given ~v (~v bits)"
@@ -81,11 +81,11 @@
 
 (define check:src-dest
   (λ (a a1 a2 n)
-    (unless (or (register? a1) (offset? a1))
+    (unless (or (register? a1) (Mem? a1))
       (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (exact-integer? a2) (Const? a2))
+    (unless (or (register? a2) (Mem? a2) (exact-integer? a2) (Const? a2))
       (error n "expects register, offset, exact integer, or defined constant; given ~v" a2))
-    (when (and (offset? a1) (offset? a2))
+    (when (and (Mem? a1) (Mem? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
     (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
       (error n "literal must not exceed register size (~v-bits); given ~v (~v bits)"
@@ -93,7 +93,7 @@
     (when (and (register? a1) (= (register-size a1) 64) (exact-integer? a2) (> (integer-length a2) 31))
       (error n "literal must not exceed 32-bits signed; given ~v (~v bits signed); go through a register instead"
              a2 (add1 (integer-length a2))))
-    (when (and (offset? a1) (exact-integer? a2))
+    (when (and (Mem? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
     (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
       (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
@@ -103,15 +103,15 @@
 
 (define check:mov
   (λ (a a1 a2 n)
-    (unless (or (register? a1) (offset? a1))
+    (unless (or (register? a1) (Mem? a1))
       (error n "expects register or offset; given ~v" a1))
-    (unless (or (register? a2) (offset? a2) (Const? a2) (exp? a2))
+    (unless (or (register? a2) (Mem? a2) (Const? a2) (exp? a2))
       (error n "expects register, offset, or expression; given ~v" a2))
-    (when (and (offset? a1) (offset? a2))
+    (when (and (Mem? a1) (Mem? a2))
       (error n "cannot use two memory locations; given ~v, ~v" a1 a2))
     (when (and (register? a1) (exact-integer? a2) (> (integer-size a2) (register-size a1)))
       (error n "literal must not exceed ~v-bits; given ~v (~v bits)" (register-size a1) a2 (integer-size a2)))
-    (when (and (offset? a1) (exact-integer? a2))
+    (when (and (Mem? a1) (exact-integer? a2))
       (error n "cannot use a memory locations and literal; given ~v, ~v; go through a register instead" a1 a2))
     (when (and (register? a1) (register? a2) (not (= (register-size a1) (register-size a2))))
       (error n "cannot move between registers of unequal size; given ~v (~v-bit), ~v (~v-bit)"
@@ -142,7 +142,13 @@
       (error n "expects register; given ~v" dst))
     (unless (or (exp? x) (Mem? x))
       (error n "expects memory expression; given ~v" x))
-    (values a (arg-normalize dst) (arg-normalize x))))
+    (let ([x (arg-normalize x)])
+      (values a (arg-normalize dst)
+              (cond
+                [(Mem? x) x]
+                [(list? x) x]
+                [(symbol? x) (Mem x)]
+                [else (Mem x)])))))
 
 (define check:none
   (λ (a n) (values a)))
@@ -264,10 +270,9 @@
 
 ;; See https://github.com/cmsc430/a86/issues/2 for discussion
 
-(provide label?)
-(define (label? x)
-  (and (symbol? x)
-       (asm-label? x)
+(provide label-symbol?)
+(define (label-symbol? x)
+  (and (asm-label? x)
        (not (register? x))))
 
 (provide (struct-out $))
@@ -307,175 +312,186 @@
                         (write-string ")" port)))
              (recur s port)))))])
 
+(provide label?)
+(define (label? x)
+  (or (label-symbol? x)
+      ($? x)))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Effective Addresses
 
 (provide Mem Mem?)
 
-;; type Mem =
-;; | (Mem [Maybe Label] [Maybe Register] [Maybe Register] [Maybe Integer] [Maybe Scale])
-;; where at least one of label, base, or index must be given,
-;; index cannot be 'rsp
-
 ;; type Scale = 1 | 2 | 4 | 8
-
-(define (parse-mem-args orig)
-  (define (parse-mem-args-lab args)
-    (match args
-      [(cons #f args)
-       (cons #f (parse-mem-args-r1 args))]
-      [(cons (or (? label? l) ($ l)) args)
-       (cons ($ l) (parse-mem-args-r1 args))]
-      [_
-       (cons #f (parse-mem-args-r1 args))]))
-
-  (define (parse-mem-args-r1 args)
-    (match args
-      [(cons #f args)
-       (cons #f (parse-mem-args-r2 args))]
-      [(cons (? register? r1) args)
-       (cons r1 (parse-mem-args-r2 args))]
-      [_
-       (cons #f (parse-mem-args-r2 args))]))
-
-  (define (parse-mem-args-r2 args)
-    (match args
-      [(cons #f args)
-       (cons #f (parse-mem-args-off args))]
-      [(cons (? register? r2) args)
-       (cons r2 (parse-mem-args-off args))]
-      [_
-       (cons #f (parse-mem-args-off args))]))
-
-  (define (parse-mem-args-off args)
-    (match args
-      [(cons #f args)
-       (cons #f (parse-mem-args-scale args))]
-      [(cons (? exact-integer? o) args)
-       (cons o (parse-mem-args-scale args))]
-      [_
-       (cons #f (parse-mem-args-scale args))]))
-
-  (define (parse-mem-args-scale args)
-    (match args
-      [(list #f) (list #f)]
-      [(list (? scale? s)) (list s)]
-      [(list) (list #f)]
-      [else (error "Mem: bad args" orig)]))
-
-  (match (parse-mem-args-lab orig)
-    [(list #f #f #f _ _)
-     (error "Mem: at least one of label, base, or index must be given" orig)]
-    [(list _ _ 'rsp _ _)
-     (error "Mem: index cannot be rsp")]
-    [as
-     (apply %mem as)]))
-
-;; Given list of 5 fields, construct unambiguous argument list with
-;; fewest #f's possible
-(define (unparse-mem-args args)
-  (define (unparse-mem-args-lab args)
-    (match args
-      [(cons #f args)
-       (unparse-mem-args-r1 args)]
-      [(cons l args)
-       (cons l (unparse-mem-args-r1 args))]))
-
-  (define (unparse-mem-args-r1 args)
-    (match args
-      [(cons #f (cons #f args))
-       (unparse-mem-args-off args)]
-      [(cons #f (cons r args))
-       (cons #f (cons r (unparse-mem-args-off args)))]
-      [(cons r (cons #f args))
-       (cons r (unparse-mem-args-off args))]
-      [(cons r1 (cons r2 args))
-       (cons r1 (cons r2 (unparse-mem-args-off args)))]))
-
-  (define (unparse-mem-args-off args)
-    (match args
-      [(list #f #f) '()]
-      [(list o #f) (list o)]
-      [(list o s) (list o s)]))
-  (unparse-mem-args-lab args))
-
-(define (make-Mem . args)
-  (parse-mem-args args))
-
 (define (scale? x)
   (memq x '(1 2 4 8)))
 
-(struct %mem (label base index off scale)
+;; NOTE: clang will accept inputs on the range [-((2^64)-1), (2^64)-1], but it
+;; silently drops the high bits, and that's not helpful to us. The semantically
+;; valid range is that of the standard signed 32-bit integer.
+(define (memory-offset-integer? x)
+  (and (integer? x)
+       (or (> x (- (expt 2 31)))
+           (< x (sub1 (expt 2 32))))))
+
+(define (non-rsp-register? x)
+  (and (register? x)
+       (not (eq? x 'rsp))))
+
+;; type Mem =
+;;   | (Mem #f       Label    #f            [Maybe Integer])
+;;   | (Mem Integer  #f       #f            #f             )
+;;   | (Mem Register #f       [Maybe Scale] [Maybe Integer])
+;;   | (Mem Register Register [Maybe Scale] [Maybe Integer])
+;;
+;; NOTE: Index cannot be ['rsp].
+(struct %mem (base index scale displacement)
   #:reflection-name 'Mem
   #:transparent
   #:property prop:custom-print-quotable 'never
   #:methods gen:custom-write
-  [(define (write-proc mem port mode) (mem-print mem port mode))]
-  )
-
-(define (mem-print mem port mode)
-  (if (number? mode)
-      (write-string "(" port)
-      (write-string "#(struct:" port))
-  (write-string "Mem " port)
-  (let ([recur (case mode
-                 [(#t) write]
-                 [(#f) display]
-                 [else (lambda (p port) (print p port mode))])])
-    (for-each
-     (λ (t) (t))
-     (add-between
-      (map
-       (λ (x) (λ () (recur x port)))
-       (unparse-mem-args (rest (vector->list (struct->vector mem)))))
-      (λ () (write-string " " port)))))
-  (write-string ")" port))
+  [(define (write-proc mem port mode)
+     (if (number? mode)
+         (write-string "(" port)
+         (write-string "#(struct:" port))
+     (write-string "Mem" port)
+     (let ([recur (case mode
+                    [(#t) write]
+                    [(#f) display]
+                    [else (λ (p port) (print p port mode))])])
+       (for ([acc-proc (in-list (list %mem-base %mem-index %mem-scale %mem-displacement))]
+             #:do [(define val (acc-proc mem))]
+             #:when val)
+         (write-string " " port)
+         (when (equal? acc-proc %mem-scale)
+           (write-string "#:scale " port))
+         (match val
+           [($ l) (recur l port)]
+           [_ (recur val port)])))
+     (write-string ")" port))])
 
 (define Mem? %mem?)
 
 (define-match-expander Mem
   (λ (stx)
     (syntax-case stx ()
-      [(_ l b i o s)  #'(%mem l b i o s)]))
+      [(_ b i s o) #'(%mem b i s o)]))
   (λ (stx)
     (syntax-case stx ()
       [m (identifier? #'m) #'make-Mem]
-      [(_ . m) #'(make-Mem . m)])))
+      [(_ . args) #'(make-Mem . args)])))
 
+(define (Mem/relative? x)
+  (and (%mem? x)
+       (let ([i (%mem-index x)])
+         (and i ($? i)))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Offsets
+(define (Mem/absolute? x)
+  (and (%mem? x)
+       (not (Mem/relative? x))))
 
-(provide Offset Offset?)
+;; Smart constructor for a [%mem].
+;;
+;; This implementation seeks to address a couple design goals:
+;;
+;;   - Support all existing memory addressing needs for CMSC 430.
+;;   - Check inputs for validity. Do not construct invalid [%mem]s.
+;;   - Provide useful error messages when given invalid arg configurations.
+(define make-Mem
+  ;; NOTE: This style of implementation (i.e., using single-expr [define] forms
+  ;; with [(let () ...)]) is odd, but it allows us to make the contracts and
+  ;; resulting function lie about their names, such that they all report [Mem].
+  (let ()
 
-(define check:offset
-  (λ (m n)
-    (unless (or (exp? m) (register? m))
-      (error n "expects a memory expression or register; given ~v" m))
-     (values (exp-normalize m))))
+    ;;     BASE      + (INDEX             * SCALE       ) + DISPLACEMENT           -> RESULT
+    ;; (->              label?                                                        Mem/relative?)
+    ;; (->              label?                              memory-offset-integer?    Mem/relative?)
+    (define Mem:relative-from-label
+      (let ()
+        (define/contract (Mem index #:scale scale offset)
+          (->i ([index label?]
+                #:scale [scale #f]
+                [offset (or/c #f memory-offset-integer?)])
+               [_ Mem/relative?])
+          (%mem #f (or (and ($? index) index) ($ index)) scale offset))
+        Mem))
 
-(struct %offset (m)
-  #:reflection-name 'Offset
-  #:transparent
-  #:guard check:offset)
+    ;;     BASE      + (INDEX             * SCALE       ) + DISPLACEMENT           -> RESULT
+    ;; (->                                                  memory-offset-integer?    Mem/absolute?)
+    (define Mem:absolute-from-offset
+      (let ()
+        (define/contract (Mem #:scale scale offset)
+          (->i (#:scale [scale #f]
+                [offset memory-offset-integer?])
+               [_ Mem/absolute?])
+          (%mem offset #f scale #f))
+        Mem))
 
-(define Offset? %offset?)
+    ;;     BASE      + (INDEX             * SCALE       ) + DISPLACEMENT           -> RESULT
+    ;; (-> register?                                                                  Mem/absolute?)
+    ;; (-> register?                                        memory-offset-integer?    Mem/absolute?)
+    ;; (-> register?    non-rsp-register?                                             Mem/absolute?)
+    ;; (-> register?    non-rsp-register?                   memory-offset-integer?    Mem/absolute?)
+    ;; (-> register?    non-rsp-register? #:scale scale?                              Mem/absolute?)
+    ;; (-> register?    non-rsp-register? #:scale scale?    memory-offset-integer?    Mem/absolute?)
+    (define Mem:absolute-from-base-register
+      (let ()
+        (define/contract (Mem base index #:scale scale offset)
+          (->i ([base register?]
+                [index (or/c #f non-rsp-register?)]
+                #:scale [scale (index) (and index (or/c #f scale?))]
+                [offset (or/c #f memory-offset-integer?)])
+               [_ Mem/absolute?])
+          (%mem base index scale offset))
+        Mem))
 
-(define-match-expander Offset
-  (λ (stx)
-    (syntax-case stx ()
-      [(_ p)  #'(%offset p)]
-      [(_ p1 p2) #'(%offset (Plus p1 p2))]))
-  (λ (stx)
-    (syntax-case stx ()
-      [m (identifier? #'m)
-         #'(case-lambda
-             [(m) (%offset m)]
-             [(m1 m2) (%offset (Plus m1 m2))])]
-      [(_ m) #'(%offset m)]
-      [(_ m1 m2) #'(%offset (Plus m1 m2))])))
+    ;;     BASE      + (INDEX             * SCALE       ) + DISPLACEMENT           -> RESULT
+    ;; (->              non-rsp-register? #:scale scale?                              Mem/absolute?)
+    ;; (->              non-rsp-register? #:scale scale?    memory-offset-integer?    Mem/absolute?)
+    (define Mem:absolute-from-index-register
+      (let ()
+        (define/contract (Mem index #:scale scale offset)
+          (->i ([index non-rsp-register?]
+                #:scale [scale (or/c #f scale?)]
+                [offset (or/c #f memory-offset-integer?)])
+               [_ Mem/absolute?])
+          (%mem #f index scale offset))
+        Mem))
 
+    (define Mem:invalid-arguments
+      (let ()
+        (define/contract (Mem arg0 [arg1 #f] #:scale [scale #f] [arg2 #f])
+          (->i ([first (or/c label? register? memory-offset-integer?)])
+               ([second (or/c #f register? memory-offset-integer?)]
+                #:scale [scale (or/c #f scale?)]
+                [third (or/c #f memory-offset-integer?)])
+               [_ Mem?])
+          ;; NOTE: This actually shouldn't be executed --- the contract ought to
+          ;; intercept anything problematic and report a useful error message.
+          (error 'Mem "invalid argument configuration: ~e" `(,arg0 ,arg1 #:scale ,scale ,arg2)))
+        Mem))
+
+    (procedure-rename
+     (λ (#:scale [scale #f] . args)
+       (match args
+         [(list (? label? l))        (Mem:relative-from-label l #:scale scale #f)]
+         [(list (? label? l) offset) (Mem:relative-from-label l #:scale scale offset)]
+         [(list (? integer? offset)) (Mem:absolute-from-offset #:scale scale offset)]
+         [(list (? register? base) (? register? index) offset)
+          (Mem:absolute-from-base-register base index #:scale scale offset)]
+         [(list (? register? base) (? register? index))
+          (Mem:absolute-from-base-register base index #:scale scale #f)]
+         [(list (? register? base-or-index))
+          (if scale
+              (Mem:absolute-from-index-register base-or-index #:scale scale #f)
+              (Mem:absolute-from-base-register  base-or-index #f #:scale #f #f))]
+         [(list (? register? base-or-index) offset)
+          (if scale
+              (Mem:absolute-from-index-register base-or-index #:scale scale offset)
+              (Mem:absolute-from-base-register  base-or-index #f #:scale #f offset))]
+         [_ (apply Mem:invalid-arguments args #:scale scale)]))
+     'Mem)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Instructions
@@ -650,11 +666,7 @@
       ($? x)
       (integer? x)))
 
-(provide offset? 64-bit-integer? 32-bit-integer? 16-bit-integer? 8-bit-integer?)
-
-(define (offset? x)
-  (or (Offset? x)
-      (Mem? x)))
+(provide 64-bit-integer? 32-bit-integer? 16-bit-integer? 8-bit-integer?)
 
 (define (integer-size x)
   (if (negative? x)
@@ -795,6 +807,7 @@
      (extern-decls asm)]))
 
 ;; Any -> Boolean
+(provide asm-label?)
 (define (asm-label? s)
   (and (symbol? s)
        (regexp-match #rx"^[a-zA-Z._?][a-zA-Z0-9_$#@~.?]*$" (symbol->string s))))
@@ -806,8 +819,7 @@
     [(? register?) '()]
     [(Label _) '()]  ; declaration, not use
     [(Extern _) '()] ; declaration, not use
-    [(Offset m)
-     (label-uses m)]
+    [(Mem _ ($ l) _ _) (list l)]
     [(? exp?)
      (exp-label-uses i)]
     [(instruction _)

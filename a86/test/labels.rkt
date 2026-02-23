@@ -13,7 +13,7 @@
         (Jne 'mov)
         (Ret)))
  0)
-        
+
 ;; Check that you can use labels names that coincide with registers with $
 (check-equal?
  (asm-interp

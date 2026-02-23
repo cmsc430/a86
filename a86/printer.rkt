@@ -14,19 +14,6 @@
 (define (asm-string a)
   (with-output-to-string (lambda () (asm-display a))))
 
-(define label-occurred? (make-parameter #f))
-(define-syntax (sqbracket stx)
-  (syntax-case stx ()
-    [(_ e)
-     #'(parameterize ([label-occurred? #f])
-         (let ([v e])
-           (string-append "["
-                          v
-                          (if (label-occurred?)
-                              " + rip"
-                              "")
-                          "]")))]))
-
 (define tab (make-string 8 #\space))
 
 (define (comment->string c)
@@ -43,11 +30,9 @@
   (match (system-type 'os)
     ['macosx
      (λ (s)
-       (label-occurred? #t)
        (string-append "_" (symbol->string s)))]
     [_
      (λ (s)
-       (label-occurred? #t)
        (symbol->string s))]))
 
        ;(if (and (current-shared?) (memq s (current-extern-labels)))
@@ -60,11 +45,9 @@
   (match (system-type 'os)
     ['macosx
      (λ (s)
-       (label-occurred? #t)
        (string-append "_" (symbol->string s)))]
     [_
      (λ (s)
-       (label-occurred? #t)
        (symbol->string s))]))
 
 ;; Instruction -> String
@@ -86,33 +69,107 @@
         s)))
 
 ;; Mem -> String
-(define (mem->string m)
-  (define (x->string x)
-    (match x
-      [(? integer?) (number->string x)]
-      [(? symbol?) (symbol->string x)]
-      [($ x) (label-symbol->string x)]))
-  (match m
-    [(Mem l b i o s)
-     (string-append
-      (apply string-append (add-between (map x->string (filter identity (list l o b i))) " + "))
-      (match s
-        [#f ""]
-        [1  ""]
-        [i (string-append " * " (number->string i))]))]))
+(define (mem->string m #:omit-brackets? [omit-brackets? #f])
+  (string-join (flatten
+                (list (if omit-brackets? "" "[")
+                      (match m
+                        ;; Relative label address; inject [rip] base if using
+                        ;; brackets, leave out otherwise.
+                        [(Mem #f ($ label) #f (and off (or #f (? integer?))))
+                         (list (if omit-brackets? "" "rip + ")
+                               (label-symbol->string label)
+                               (if off
+                                   (list  " + "
+                                          (number->string off))
+                                   (list)))]
+                        ;; Invalid relative configuration.
+                        [(Mem b (and i (? $?)) s o)
+                         (unless (false? b)
+                           (raise-argument-error 'mem->string "#f" b))
+                         (unless (false? s)
+                           (raise-argument-error 'mem->string "#f" s))
+                         (unless (or (false? o) (integer? o))
+                           (raise-argument-error 'mem->string "(or/c #f integer?)" o))
+                         ;; Shouldn't get here, but just in case...
+                         (raise-user-error 'mem->string
+                                           "invalid relative Mem configuration: ~a"
+                                           `(Mem #t ,b ,i ,s ,o))]
+
+                        ;; Only absolute addresses below this.
+
+                        ;; Base register or offset only.
+                        [(Mem (and b (not #f)) #f #f #f)
+                         (list
+                          (cond
+                            [(symbol? b) (symbol->string b)]
+                            [(integer? b) (number->string b)]
+                            [else
+                             (raise-argument-error 'mem->string
+                                                   "(or/c symbol? integer?)"
+                                                   b)]))]
+                        ;; Base + index registers w/ optional offset.
+                        [(Mem (and b (not #f)) (and i (not #f)) #f o)
+                         (list (symbol->string b)
+                               " + "
+                               (symbol->string i)
+                               (if o
+                                   (list " + " (number->string o))
+                                   (list)))]
+                        ;; Base + index registers w/ scale w/ optional offset.
+                        [(Mem (and b (not #f)) (and i (not #f)) s o)
+                         (list (symbol->string b)
+                               " + ("
+                               (symbol->string i)
+                               " * "
+                               (number->string s)
+                               ")"
+                               (if o
+                                   (list " + " (number->string o))
+                                   (list)))]
+                        ;; Base w/ offset.
+                        [(Mem (and b (not #f)) #f #f (and o (not #f)))
+                         (list (symbol->string b)
+                               " + "
+                               (number->string o))]
+                        ;; Index w/ scale w/ optional offset.
+                        [(Mem #f (and i (not #f)) (and s (not #f)) o)
+                         (list "("
+                               (symbol->string i)
+                               " * "
+                               (number->string s)
+                               ")"
+                               (if o
+                                   (list " + " (number->string o))
+                                   (list)))]
+                        ;; Invalid configuration.
+                        [(Mem b i s o)
+                         (unless (or (false? b) (register? b) (integer? b))
+                           (raise-argument-error 'mem->string
+                                                 "(or/c #f register? integer?)"
+                                                 b))
+                         (unless (or (false? i) (register? i))
+                           (raise-argument-error 'mem->string
+                                                 "(or/c #f register?)"
+                                                 i))
+                         (unless (or (false? s) (integer? s))
+                           (raise-argument-error 'mem->string
+                                                 "(or/c #f integer?)"
+                                                 s))
+                         (unless (or (false? o) (integer? o))
+                           (raise-argument-error 'mem->string
+                                                 "(or/c #f integer?)"
+                                                 o))
+                         (raise-user-error 'mem->string
+                                           "invalid absolute Mem configuration: ~a"
+                                           `(Mem #f ,b ,i ,s ,o))])
+                      (list (if omit-brackets? "" "]"))))
+               ""))
 
 ;; Exp ∪ Reg ∪ Offset -> String
 (define (arg->string e)
   (match e
     [(? register?) (symbol->string e)]
-    #;[(? Mem?) (string-append "[" (mem->string e) "]")]
-    #;[(Offset (? register? r)) (string-append "[" (symbol->string r) "]")]
-    #;[(Offset ($ (? label? r))) (string-append "[" (label-symbol->string r) " + rip]")]
-    #;[(Offset e) (string-append "[" (exp->string e) "]")]
-    [(? Mem?)                  (sqbracket (mem->string e))]
-    [(Offset (? register? r))  (sqbracket (symbol->string r))]
-    [(Offset ($ (? label? r))) (sqbracket (label-symbol->string r))]
-    [(Offset e)                (sqbracket (exp->string e))]
+    [(? Mem?) (mem->string e)]
     [_ (exp->string e)]))
 
 ;; Exp -> String
@@ -153,24 +210,29 @@
     [(Lea d (? Mem? m))
      (string-append tab "lea "
                     (arg->string d) ", "
-                    (sqbracket (mem->string m)))]
+                    (mem->string m))]
     [(Lea d e)
-     (string-append tab "lea "
+     (error 'simple-instr->string "unsupported instruction variant: ~e" i)
+     #;(string-append tab "lea "
                     (arg->string d) ", "
-                    (sqbracket (arg->string e)))]
+                    (arg->string e))]
     [(Equ x c)
      (string-append tab
                     (symbol->string x)
                     " equ "
                     (number->string c))]
     [(Dq (? Mem? m))
-     (string-append tab ".quad " (mem->string m))]
-    [(Dq  m)
+     (string-append tab ".quad " (mem->string m #:omit-brackets? #t))]
+    [(Dq (? number? m))
      (string-append tab ".quad " (number->string m))]
+    [(Dq _)
+     (error 'simple-instr->string "unknown instruction: ~e" i)]
     [(Dd (? Mem? m))
-     (string-append tab ".long " (mem->string m))]
-    [(Dd  m)
+     (string-append tab ".long " (mem->string m #:omit-brackets? #t))]
+    [(Dd (? number? m))
      (string-append tab ".long " (number->string m))]
+    [(Dd _)
+     (error 'simple-instr->string "unknown instruction: ~e" i)]
     [(Db (? bytes? bs))
      (apply string-append tab ".byte " (add-between (map number->string (bytes->list bs)) ", "))]
     [_ (common-instruction->string i)]))

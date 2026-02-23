@@ -510,72 +510,136 @@ Labels are represented as symbols (or @racket[$] structures)
 that must conform to the naming restriction imposed by the assembler,
 so not all symbols are valid label names.
 
-@defproc[(label? [x any/c]) boolean?]{
- A predicate for label @emph{names}, i.e. symbols which are not register names.
+@defproc[(asm-label? [x any/c]) boolean?]{
+ A predicate for label @emph{names}, i.e., symbols that are not register names.
 
- Labels must also follow the restrictions on label names: "Valid
- characters in labels are letters, numbers, @tt{_}, @tt{$}, @tt{#}, @tt{@"@"}, @tt{~}, @tt{.}, and
- @tt{?}. The only characters which may be used as the first character of an
- identifier are letters, @tt{.} (with special meaning), @tt{_}
- and @tt{?}."
+ Labels must also follow the restrictions on label names: The NASM assembler's
+ documentation specifies: "Valid characters in labels are letters, numbers,
+ @tt{_}, @tt{$}, @tt{#}, @tt{@"@"}, @tt{~}, @tt{.}, and @tt{?}. The only
+ characters which may be used as the first character of an identifier are
+ letters, @tt{.} (with special meaning), @tt{_} and @tt{?}."
 
  @ex[
- (label? 'foo)
- (label? "foo")
- (label? 'rax)
- (label? 'foo-bar)
- (label? 'foo.bar)
- ]
-
+     (asm-label? 'foo)
+     (asm-label? "foo")
+     (asm-label? 'rax)
+     (asm-label? 'foo-bar)
+     (asm-label? 'foo.bar)
+     ]
 }
 
 @defstruct*[$ ([l symbol?])]{
-Structure for representing labels.  Useful when you need to refer to a label
-that has a name conflicting with register name or other reserved keyword.
+ Structure for representing labels. Useful when you need to refer to a label
+ that has a name conflicting with a register name or other reserved keyword, or
+ just for syntactic distinction.
 
-@ex[(Label ($ 'rax))]
+ @ex[(Label ($ 'rax))]
 
+}
+
+@defproc[(label? [x any/c]) boolean?]{
+ A predicate for labels, equivalent to:
+
+ @racketblock[
+  (or (asm-symbol? x)
+      ($? x))
+ ]
 }
 
 @subsection{Memory Expressions}
 
-Memory expressions are represented with @racket[Offset]
-structures. A memory expression signals that a quantity
-should be interpreted as a location in memory, rather than
-the bits itself. For example, the @racket[rsp] holds a
-pointer the stack memory; @racket[(Mov rax rsp)] will move
-the pointer held in @racket[rsp] into @racket[rax], while
-@racket[(Mov rax (Offset rsp))] will read 64-bits of memory
-at the location pointed at by the pointer in @racket[rsp]
-into @racket[rax]. On the other hand, @racket[(Mov rsp rax)]
-will move the value in @racket[rax] into the @racket[rsp]
-register (overwriting the stack pointer), while
-@racket[(Mov (Offset rsp) rax)] will write the value in
-@racket[rax] into the memory pointed at by the @racket[rsp]
-register.
+Memory expressions are represented with @racket[Mem] structures. A memory
+expression signals that a quantity should be interpreted as a location in
+memory, rather than as the bits themselves. For example, consider the
+@racket[rsp] register, which holds a pointer to the stack in memory, i.e., its
+value is a number that can be interpreted as an address. The instruction
+@racket[(Mov rax rsp)] will copy that address from @racket[rsp] into
+@racket[rax], while the instruction @racket[(Mov rax (Mem rsp))] will copy the
+64 bits of data stored in memory at the address held by @racket[rsp] into
+@racket[rax]. Similarly, @racket[(Mov rsp rax)] will copy the value held in
+@racket[rax] into @racket[rsp] (which will overwrite our stack pointer ---
+almost always a bad thing), while @racket[(Mov (Mem rsp) rax)] will write the
+value held in @racket[rax] into the memory pointed to by the @racket[rsp]
+pointer without actually changing the value held in @racket[rsp].
 
-Memory expression can take as arguments either registers or
-@secref["Assembly_Expressions"], which are commonly used to
-indicate offsets from a given memory location, e.g.
-@racket[(Mov rax (Offset (|@| (+ rsp 8))))] reads the 64-bits of
-memory at the location held in @racket[rsp] + @racket[8],
-i.e. @racket[8] bytes past wherever @racket[rsp] points.
+@defstruct*[Mem ([base   (or/c #f register? integer?)]
+                 [index  (or/c #f label? (and/c register? (not/c 'rsp)))]
+                 [scale  (or/c #f 1 2 4 8)]
+                 [offset (or/c #f integer?)])]{
+ Structure for representing memory expressions, as used by instructions like
+ @racket[Add], @racket[Mov], @racket[Lea], and so on.
 
+ The @racket[integer?]-accepting arguments @racket[base] and @racket[offset]
+ place restrictions on those integers depending on the addressing mode. In
+ 64-bit mode, the integer can be no wider than 32 bits (signed).
 
-@defstruct*[Offset ([e (or/c exp? register?)])]{
+ When the @racket[scale] is omitted, it is not printed out in x86. However,
+ omitting it is effectively equivalent to specifying a @racket[scale] of
+ @racket[1].
 
- Creates an memory offset from a register. Offsets are used
- as arguments to instructions to indicate memory locations.
+ When two registers are given as the @racket[base] and @racket[index] arguments,
+ they must be of the same width. For example, @racket[rax] and @racket[r8] are
+ compatible, but @racket[rbx] and @racket[eax] are not.
 
- @ex[
- (Offset 'rax)
- ]
+ We don't use the @racket[scale] for anything currently, but it is supported for
+ future extensions to the course.
+
+ Because of how complicated it can be to correctly specify the arguments to a
+ @racket[Mem], this structure is built by a specialized smart constructor. The
+ acceptable forms are documented below:
 }
 
-@defproc[(offset? [x any/c]) boolean?]{
- A predicate for offsets.
-}
+@nested[#:style 'inset]{
+ @defproc[#:link-target? #f
+          (Mem [index label?] [offset (or/c #f integer?) #f])
+          Mem?]{
+  A relative address specification. In these cases, the printer automatically
+  prefixes the address computation with the @tt{rip} base register according to
+  the x86 specification.
 
+  The @racket[index] can be given as either a symbol (e.g., @tt{'foo}) or a
+  @racket[$]-wrapped label. In the former case, the symbol will be wrapped in a
+  @racket[$] during construction to ensure proper architecture-dependent
+  formatting when printing.
+
+  Prints in x86 as @tt{[rip + @racket[index] + @racket[offset]]}.
+ }
+
+ @defproc[#:link-target? #f
+          (Mem [offset integer?])
+          Mem?]{
+  An absolute address specification with an @racket[offset] as the base. We
+  don't use this form currently, but it is supported for future extensions to
+  the course.
+
+  Prints in x86 as @tt{[@racket[offset]]}.
+ }
+
+ @defproc[#:link-target? #f
+          (Mem [base register?]
+               [index (or/c #f (and/c register? (not/c 'rsp))) #f]
+               [#:scale scale (or/c #f 1 2 4 8) #f]
+               [offset (or/c #f integer?) #f])
+          Mem?]{
+  An absolute address specification with a register as the @racket[base]. The
+  @racket[index], @racket[scale], and @racket[offset] arguments are optional.
+
+  Prints in x86 as @tt{[@racket[base] + (@racket[index] * @racket[scale]) +
+  @racket[offset]]}.
+ }
+
+ @defproc[#:link-target? #f
+          (Mem [index (and/c register? (not/c 'rsp))]
+               [#:scale scale (or/c 1 2 4 8)]
+               [offset (or/c #f integer?) #f])
+          Mem?]{
+  An absolute address specification with a non-@racket[rsp] register as the
+  @racket[index]. This form requires the @racket[scale] to be given, and it
+  accepts an optional @racket[offset] argument.
+
+  Prints in x86 as @tt{[(@racket[index] * @racket[scale]) + @racket[offset]]}.
+ }
+}
 
 
 @subsection{Assembly Expressions}
@@ -721,7 +785,7 @@ This section describes the instruction set of a86.
 
 }
 
-@defstruct*[Mov ([dst (or/c register? offset?)] [src (or/c register? offset? 64-bit-integer?)])]{
+@defstruct*[Mov ([dst (or/c register? Mem?)] [src (or/c register? Mem? 64-bit-integer?)])]{
 
  A move instruction. Moves @racket[src] to @racket[dst].
 
@@ -734,12 +798,12 @@ This section describes the instruction set of a86.
    (Mov 'rbx 42)
    (Mov 'rax 'rbx)
    (Ret))
- (eval:error (Mov (Offset 'rax 0) (Offset 'rbx 0)))
+ (eval:error (Mov (Mem 'rax 0) (Mem 'rbx 0)))
  ]
 
 }
 
-@defstruct*[Add ([dst register?] [src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Add ([dst register?] [src (or/c register? Mem? 32-bit-integer?)])]{
 
  An addition instruction. Adds @racket[src] to @racket[dst]
  and writes the result to @racket[dst]. Updates the conditional flags.
@@ -756,7 +820,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Sub ([dst register?] [src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Sub ([dst register?] [src (or/c register? Mem? 32-bit-integer?)])]{
 
  A subtraction instruction. Subtracts @racket[src] from
  @racket[dst] and writes the result to @racket[dst].
@@ -774,7 +838,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Mul ([src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Mul ([src (or/c register? Mem? 32-bit-integer?)])]{
 
  A multiplication instruction. Multiplies @racket[src] by @racket['rax]
  and writes the result to @racket['rax] and @racket['rdx]. Updates flags.
@@ -791,7 +855,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmp ([a1 (or/c register? offset?)] [a2 (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Cmp ([a1 (or/c register? Mem?)] [a2 (or/c register? Mem? 32-bit-integer?)])]{
  Compare @racket[a1] to @racket[a2] by subtracting @racket[a2] from @racket[a1]
  and updating the comparison flags. Does not store the result of subtraction.
 
@@ -964,7 +1028,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovz ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovz ([dst register?] [src (or/c register? Mem?)])]{
  Read from @racket[src], move to @racket[dst] if the zero flag is set.
 
  @ex[
@@ -992,17 +1056,17 @@ This section describes the instruction set of a86.
 			     (Cmp 'r9 1)
 			     (Mov 'rax 0)
 			     ; doesn't move, but does read memory address 0
-			     (Cmovz 'rax (Offset 'r9))
+			     (Cmovz 'rax (Mem 'r9))
 			     (Ret))))
 
 }
 
 
-@defstruct*[Cmove ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmove ([dst register?] [src (or/c register? Mem?)])]{
  An alias for @racket[Cmovz]. See notes on @racket[Cmovz].
 }
 
-@defstruct*[Cmovnz ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovnz ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the zero flag is @emph{not} set.
  See notes on @racket[Cmovz].
 
@@ -1021,12 +1085,12 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovne ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovne ([dst register?] [src (or/c register? Mem?)])]{
  An alias for @racket[Cmovnz]. See notes on @racket[Cmovz].
 
 }
 
-@defstruct*[Cmovl ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovl ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the conditional flags are set to ``less than'' (see @secref{Flags}).
  See also the notes on @racket[Cmovz].
 
@@ -1045,7 +1109,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovle ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovle ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the conditional flags are set to ``less than or equal'' (see @secref{Flags}).
  See also the notes on @racket[Cmovz].
 
@@ -1064,7 +1128,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovg ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovg ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the conditional flags are set to ``greather than'' (see @secref{Flags}).
  See also the notes on @racket[Cmovz].
 
@@ -1083,7 +1147,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovge ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovge ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the conditional flags are set to ``greater than or equal'' (see @secref{Flags}).
  See also the notes on @racket[Cmovz].
 
@@ -1102,7 +1166,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovo ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovo ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the overflow flag is set.
  See notes on @racket[Cmovz].
 
@@ -1121,7 +1185,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovno ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovno ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the overflow flag is @emph{not} set.
  See notes on @racket[Cmovz].
 
@@ -1140,7 +1204,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovc ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovc ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the carry flag is set.
  See notes on @racket[Cmovz].
 
@@ -1159,7 +1223,7 @@ This section describes the instruction set of a86.
  ]
 }
 
-@defstruct*[Cmovnc ([dst register?] [src (or/c register? offset?)])]{
+@defstruct*[Cmovnc ([dst register?] [src (or/c register? Mem?)])]{
  Move from @racket[src] to @racket[dst] if the carry flag is @emph{not} set.
  See notes on @racket[Cmovz].
 
@@ -1179,7 +1243,7 @@ This section describes the instruction set of a86.
 }
 
 
-@defstruct*[And ([dst (or/c register? offset?)] [src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[And ([dst (or/c register? Mem?)] [src (or/c register? Mem? 32-bit-integer?)])]{
 
  Compute logical ``and'' of @racket[dst] and @racket[src] and put result in @racket[dst]. Updates the conditional flags.
 
@@ -1193,7 +1257,7 @@ This section describes the instruction set of a86.
  )
 }
 
-@defstruct*[Or ([dst (or/c register? offset?)] [src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Or ([dst (or/c register? Mem?)] [src (or/c register? Mem? 32-bit-integer?)])]{
  Compute logical ``or'' of @racket[dst] and @racket[src] and put result in @racket[dst]. Updates the conditional flags.
 
  In the case of a 32-bit immediate, it is sign-extended to 64-bits.
@@ -1208,7 +1272,7 @@ This section describes the instruction set of a86.
  )
 }
 
-@defstruct*[Xor ([dst (or/c register? offset?)] [src (or/c register? offset? 32-bit-integer?)])]{
+@defstruct*[Xor ([dst (or/c register? Mem?)] [src (or/c register? Mem? 32-bit-integer?)])]{
  Compute logical ``exclusive or'' of @racket[dst] and @racket[src] and put result in @racket[dst]. Updates the conditional flags.
 
  In the case of a 32-bit immediate, it is sign-extended to 64-bits.
@@ -1350,7 +1414,7 @@ Perform bitwise not operation (each 1 is set to 0, and each 0 is set to 1) on th
  ]
 }
 
-@defstruct*[Lea ([dst (or/c register? offset?)] [x label?])]{
+@defstruct*[Lea ([dst (or/c register? Mem?)] [x label?])]{
  Loads the address of the given label into @racket[dst].
 
  @ex[
@@ -1587,9 +1651,9 @@ above (and we will discuss the difference in the next section):
 (ex
 (eg (seq (Call 'f)
 	 (Sub 'rsp 8)                ; "allocate" a word on the stack
-	 (Mov (Offset 'rsp 0) 'rax)  ; write 'rax to top frame
+	 (Mov (Mem 'rsp 0) 'rax)     ; write 'rax to top frame
 	 (Call 'g)
-	 (Mov 'rbx (Offset 'rsp 0))  ; load top frame into 'rbx
+	 (Mov 'rbx (Mem 'rsp 0))     ; load top frame into 'rbx
 	 (Add 'rsp 8)                ; "deallocate" word on the stack
 	 (Add 'rax 'rbx)))
 )
@@ -1664,13 +1728,13 @@ address to jump to, we could've also written it as:
 (ex
 (eg (seq (Sub 'rsp 8)      ; allocate a frame on the stack
 			   ; load address of 'fret label into top of stack
-	 (Lea (Offset 'rsp 0) 'fret)
+	 (Lea (Mem 'rsp 0) 'fret)
 	 (Jmp 'f)          ; jump to 'f
 	 (Label 'fret)     ; <-- return point for "call" to 'f
 	 (Push 'rax)       ; save result (like before)
 	 (Sub 'rsp 8)      ; allocate a frame on the stack
 			   ; load address of 'gret label into top of stack
-	 (Lea (Offset 'rsp 0) 'gret)
+	 (Lea (Mem 'rsp 0) 'gret)
 	 (Jmp 'g)          ; jump to 'g
 	 (Label 'gret)     ; <-- return point for "call" to 'g
 	 (Pop 'rbx)        ; pop saved result from calling 'f
@@ -1715,8 +1779,8 @@ i.e. 42:
 
 @ex[
 (asm-interp (Mov r8 42)
-	    (Mov (Offset 'm) r8)
-	    (Mov rax (Offset 'm))
+	    (Mov (Mem 'm) r8)
+	    (Mov rax (Mem 'm))
 	    (Ret)
 	    (Data)
 	    (Label 'm)
@@ -1739,8 +1803,8 @@ written to with the value 42, before being dereferenced and returned:
 	    (Extern 'malloc)
 	    (Call 'malloc)
 	    (Mov r8 42)
-	    (Mov (Offset rax) r8)
-	    (Mov rax (Offset rax))
+	    (Mov (Mem rax) r8)
+	    (Mov rax (Mem rax))
 	    (Ret))]
 
 

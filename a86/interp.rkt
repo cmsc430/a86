@@ -271,10 +271,10 @@
   (seq (save-registers)
        (Pushf)
        (Mov 'rax i)
-       (Mov (Offset log-label (* 8 17)) 'rax)
-       (Mov 'rax (Offset 'rsp 0))
-       (Mov (Offset log-label (* 8 18)) 'rax)
-       (Call (Offset log-label 0))
+       (Mov (Mem log-label (* 8 17)) 'rax)
+       (Mov 'rax (Mem 'rsp 0))
+       (Mov (Mem log-label (* 8 18)) 'rax)
+       (Call (Mem log-label))
        (Popf)
        (restore-registers)))
 
@@ -317,12 +317,12 @@
 
 (define (save-registers)
   (apply seq
-         (map (λ (r i) (seq (Mov (Offset log-label (* 8 i)) r)))
+         (map (λ (r i) (seq (Mov (Mem log-label (* 8 i)) r)))
               registers
               (build-list (length registers) add1))))
 
 (define (restore-registers)
   (apply seq
-         (map (λ (r i) (seq (Mov r (Offset log-label (* 8 i)))))
+         (map (λ (r i) (seq (Mov r (Mem log-label (* 8 i)))))
               registers
               (build-list (length registers) add1))))

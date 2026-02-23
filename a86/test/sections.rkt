@@ -18,7 +18,7 @@
         (Global 'entry)
         (Label 'entry)
         (Lea 'rax 'd)
-        (Mov 'rax (Offset 'rax 0))
+        (Mov 'rax (Mem 'rax))
         (Ret)
         (Data 'bar)
         (Label 'd)

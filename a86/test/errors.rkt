@@ -1,7 +1,7 @@
 #lang racket
 (require rackunit "../ast.rkt")
 (check-exn exn:fail?
-           (thunk (Mov (Offset 'rax 0) 100)))
+           (thunk (Mov (Mem 'rax 0) 100)))
 
 ;; Checking literal widths
 (check-exn exn:fail? (thunk (Mov 'rax (expt 2 64))))
@@ -61,7 +61,7 @@
 (check-exn exn:fail? (thunk (prog (Global 'foo) (Label 'start) (Label 'foo) (Ret))))
 (check-not-exn       (thunk (prog (Global 'start) (Label 'start) (Ret))))
 (check-not-exn       (thunk (prog (Label 'start) (Ret) (Global 'start))))
-(check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Jmp (Offset 'y 8)))))
+(check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Jmp (Mem 'y 8)))))
 (check-not-exn       (thunk (prog (Global 'x) (Label 'x) (Extern 'y) (Extern 'y) (Ret))))
 (check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Extern 'x))))
 (check-exn exn:fail? (thunk (prog (Global 'x) (Label 'x) (Label 'y) (Extern 'y))))
@@ -78,7 +78,7 @@
 (check-exn exn:fail? (thunk (Jmp 'foo-bar)))
 
 ;; Check arguments
-(check-exn exn:fail? (thunk (Lea (Offset 'rax 0) 'foo)))
+(check-exn exn:fail? (thunk (Lea (Mem 'rax 0) 'foo)))
 
 ;; Check register size agreement
 (check-exn exn:fail? (thunk (Mov 'rax 'eax)))
