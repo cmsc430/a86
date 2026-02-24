@@ -188,20 +188,20 @@
 
 (define (text-section n)
   (match (system-type 'os)
-    ['macosx (format ".section __TEXT,~a \n\t.p2align 4" n)]
-    [_       (format ".section ~a progbits alloc exec nowrite align=16" n)]))
+    ['macosx (format ".section __TEXT,~a\n\t.p2align 4" n)]
+    [_       (format ".section ~a,\"ax\",@progbits\n\t.p2align 4" n)]))
 
 (define (data-section n)
   (match (system-type 'os)
-    ['macosx (format ".section __DATA,~a \n\t.p2align 3" n)]
-    [_       (format ".section ~a progbits alloc noexec write align=8" n)]))
+    ['macosx (format ".section __DATA,~a\n\t.p2align 3" n)]
+    [_       (format ".section ~a,\"aw\",@progbits\n\t.p2align 3" n)]))
 
 ;; Instruction -> String
 (define (simple-instr->string i)
   (match i
     [(Text)         (string-append tab ".text")]
     [(Text n)       (string-append tab (text-section n))]
-    [(Data)         (string-append tab ".data\n\t .p2align 3")] ; 8-byte aligned data
+    [(Data)         (string-append tab ".data\n\t.p2align 3")] ; 8-byte aligned data
     [(Data n)       (string-append tab (data-section n))]
     [(Extern ($ l)) (string-append tab ".extern " (extern-label-decl-symbol->string l))]
     [(Global ($ l)) (string-append tab ".global " (label-symbol->string l))]
