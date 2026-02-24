@@ -188,12 +188,12 @@
 
 (define (text-section n)
   (match (system-type 'os)
-    ['macosx (format ".section __TEXT,~a \n\t .p2align 4" n)]
+    ['macosx (format ".section __TEXT,~a \n\t.p2align 4" n)]
     [_       (format ".section ~a progbits alloc exec nowrite align=16" n)]))
 
 (define (data-section n)
   (match (system-type 'os)
-    ['macosx (format ".section __DATA,~a \n\t .p2align 3" n)]
+    ['macosx (format ".section __DATA,~a \n\t.p2align 3" n)]
     [_       (format ".section ~a progbits alloc noexec write align=8" n)]))
 
 ;; Instruction -> String
@@ -205,17 +205,21 @@
     [(Data n)       (string-append tab (data-section n))]
     [(Extern ($ l)) (string-append tab ".extern " (extern-label-decl-symbol->string l))]
     [(Global ($ l)) (string-append tab ".global " (label-symbol->string l))]
-    ;;[(Label ($ l))  (string-append "_" (symbol->string l) ":")]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
+    [(Align n)
+     (match (system-type 'os)
+       ['macosx (string-append ".p2align "
+                               (number->string
+                                (let loop ([i 0] [n n])
+                                  (if (= n 1) i (loop (add1 i)
+                                                      (arithmetic-shift n -1))))))]
+       [_       (string-append ".align " (number->string n))])]
     [(Lea d (? Mem? m))
      (string-append tab "lea "
                     (arg->string d) ", "
                     (mem->string m))]
-    [(Lea d e)
-     (error 'simple-instr->string "unsupported instruction variant: ~e" i)
-     #;(string-append tab "lea "
-                    (arg->string d) ", "
-                    (arg->string e))]
+    [(Lea _ _)
+     (error 'simple-instr->string "unsupported instruction variant: ~e" i)]
     [(Equ x c)
      (string-append tab
                     (symbol->string x)
