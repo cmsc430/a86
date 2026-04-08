@@ -9,7 +9,7 @@
 
 (define-logger a86)
 
-(require "printer.rkt" "ast.rkt" "callback.rkt" "check-assembler.rkt"
+(require "printer.rkt" "ast.rkt" "callback.rkt" "check-assembler.rkt" "guarded-memory.rkt"
          (rename-in ffi/unsafe [-> _->]))
 (require (submod "printer.rkt" private))
 
@@ -51,7 +51,8 @@
 ;; before calling asm-interp again
 (define *heap*
   ; IMPROVE ME: hard-coded heap size
-  (malloc _int64 20000 'raw))
+  #;(malloc _int64 20000 'raw)
+  (guarded-malloc 20000))
 
 
 ;; Integer64 -> String
