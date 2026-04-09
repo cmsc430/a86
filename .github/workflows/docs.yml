@@ -25,10 +25,9 @@ jobs:
         version: ${{ matrix.racket-version }}
 
     - name: Install LLVM
-      uses: egor-tensin/setup-clang@v2
+      uses: ZhongRuoyu/setup-llvm@v0
       with:
-        version: 22
-        platform: x64
+        llvm-version: 17
 
     - name: Install pandoc
       run: |
