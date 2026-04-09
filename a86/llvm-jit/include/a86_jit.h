@@ -1,0 +1,91 @@
+#ifndef A86_LLVM_JIT_H
+#define A86_LLVM_JIT_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * Opaque JIT handle.
+ */
+typedef struct a86_jit a86_jit_t;
+
+/*
+ * Result of a run.
+ *
+ * On success:
+ *   ok = 1
+ *   value = returned machine integer
+ *   error_message = NULL
+ *
+ * On failure:
+ *   ok = 0
+ *   error_message = pointer to a NUL-terminated message owned by the JIT
+ *   value is unspecified
+ */
+typedef struct {
+  int ok;
+  int64_t value;
+  const char* error_message;
+} a86_jit_result_t;
+
+/*
+ * Create and destroy a JIT instance.
+ *
+ * a86_jit_create returns NULL on failure.
+ */
+a86_jit_t* a86_jit_create(void);
+void a86_jit_destroy(a86_jit_t* jit);
+
+/*
+ * Clear the last error stored in the JIT, if any.
+ * Mostly useful internally; Racket may not need this directly.
+ */
+void a86_jit_clear_error(a86_jit_t* jit);
+
+/*
+ * Return the last error message for this JIT, or NULL if none.
+ *
+ * The returned pointer is owned by the JIT and remains valid until the next
+ * operation on that JIT or until the JIT is destroyed.
+ */
+const char* a86_jit_last_error(a86_jit_t* jit);
+
+/*
+ * Install a host symbol that JIT-compiled code may reference by name.
+ *
+ * Examples: "heap", "error_handler", etc.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_define_symbol(a86_jit_t* jit, const char* name, void* addr);
+
+/*
+ * Remove all previously defined host symbols from this JIT instance.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_clear_symbols(a86_jit_t* jit);
+
+/*
+ * Assemble and execute one assembly program.
+ *
+ * asm_text must be a complete assembly source file in the target assembler
+ * syntax expected by the LLVM MC layer.
+ *
+ * entry_name is the unmangled logical entry name, e.g. "entry".
+ * On Mach-O, the assembly source will typically declare this as "_entry".
+ *
+ * The program is loaded temporarily for this call and then discarded.
+ */
+a86_jit_result_t a86_jit_run(a86_jit_t* jit,
+                             const char* asm_text,
+                             const char* entry_name);
+
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif
+
+#endif  /* A86_LLVM_JIT_H */

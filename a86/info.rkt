@@ -6,4 +6,4 @@
 (define test-omit-paths '("scribblings/"
                           "test/expressions.rkt"
                           "test/sections.rkt"))
-(define pre-install-collection "check-x86.rkt")
+(define pre-install-collection "pre-install.rkt")
