@@ -166,8 +166,21 @@ public:
 
   a86_jit_result_t run(const char *asmText, const char *entryName, void *heap) {
     clearError();
-
     a86_jit_result_t result{};
+
+    if (LastRunTracker_) {
+      if (auto err = LastRunTracker_->remove()) {
+        setError(toString(std::move(err)));
+        LastRunTracker_.reset();
+
+        result.ok = 0;
+        result.value = 0;
+        result.error_message = lastError();
+        return result;
+      }
+      LastRunTracker_.reset();
+    }
+
     result.ok = 0;
     result.value = 0;
     result.error_message = nullptr;
@@ -228,7 +241,7 @@ public:
       return result;
     }
 
-    // 4. patch glogbals in linked objects
+    // 4. patch globals in linked objects
     if (!patchGlobals(jd)) {
       consumeError(tracker->remove());
       result.error_message = lastError();
@@ -247,11 +260,9 @@ public:
     auto *fn = symOrErr->toPtr<int64_t (*)(void *)>();
     int64_t value = fn(heap);
 
-    if (auto err = tracker->remove()) {
-      setError(toString(std::move(err)));
-      result.error_message = lastError();
-      return result;
-    }
+    // Keep this run alive until the next run starts, so returned pointers
+    // into static object data remain valid while the caller decodes them.
+    LastRunTracker_ = tracker;
 
     result.ok = 1;
     result.value = value;
@@ -375,6 +386,7 @@ private:
   std::unordered_map<std::string, void *> Symbols_;
   std::unordered_map<std::string, void *> Globals_;
   std::vector<std::string> ObjectFiles_;
+  orc::ResourceTrackerSP LastRunTracker_;
 };
 
 }  // namespace
