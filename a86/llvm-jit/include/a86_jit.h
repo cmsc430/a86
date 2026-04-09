@@ -118,11 +118,15 @@ int a86_jit_clear_object_files(a86_jit_t* jit);
  * entry_name is the unmangled logical entry name, e.g. "entry".
  * On Mach-O, the assembly source will typically declare this as "_entry".
  *
+ * heap is passed as the first argument to the entry point. Programs that do
+ * not use a heap argument may ignore it.
+ *
  * The program is loaded temporarily for this call and then discarded.
  */
 a86_jit_result_t a86_jit_run(a86_jit_t* jit,
 			     const char* asm_text,
-			     const char* entry_name);
+			     const char* entry_name,
+			     void* heap);
 
 #ifdef __cplusplus
 }  /* extern "C" */

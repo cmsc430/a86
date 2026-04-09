@@ -164,7 +164,7 @@ public:
     return true;
   }
 
-  a86_jit_result_t run(const char *asmText, const char *entryName) {
+  a86_jit_result_t run(const char *asmText, const char *entryName, void *heap) {
     clearError();
 
     a86_jit_result_t result{};
@@ -244,8 +244,8 @@ public:
       return result;
     }
 
-    auto *fn = symOrErr->toPtr<int64_t (*)()>();
-    int64_t value = fn();
+    auto *fn = symOrErr->toPtr<int64_t (*)(void *)>();
+    int64_t value = fn(heap);
 
     if (auto err = tracker->remove()) {
       setError(toString(std::move(err)));
@@ -457,7 +457,8 @@ int a86_jit_clear_object_files(a86_jit_t *jit) {
 
 a86_jit_result_t a86_jit_run(a86_jit_t *jit,
 			     const char *asm_text,
-			     const char *entry_name) {
+			     const char *entry_name,
+			     void *heap) {
   a86_jit_result_t result{};
   result.ok = 0;
   result.value = 0;
@@ -467,7 +468,7 @@ a86_jit_result_t a86_jit_run(a86_jit_t *jit,
     return result;
   }
 
-  return jit->impl->run(asm_text, entry_name);
+  return jit->impl->run(asm_text, entry_name, heap);
 }
 
 }  // extern "C"

@@ -106,7 +106,7 @@
   (_fun _a86_jit_t _-> _void))
 
 (define-a86 a86_jit_run
-  (_fun _a86_jit_t _string _string _-> _a86_jit_result))
+  (_fun _a86_jit_t _string _string _pointer _-> _a86_jit_result))
 
 (define-a86 a86_jit_define_symbol
   (_fun _a86_jit_t _string _pointer _-> _int))
@@ -182,7 +182,7 @@
                      (raise e))])
     (guard-foreign-escape
      (check-result 'a86-jit
-                   (a86_jit_run the-jit asm-str (symbol->string init-label))))))
+                   (a86_jit_run the-jit asm-str (symbol->string init-label) *heap*)))))
 
 (define (program->asm-string a)
   (with-output-to-string
