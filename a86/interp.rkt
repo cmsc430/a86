@@ -10,7 +10,9 @@
 (define-logger a86)
 
 (require "printer.rkt" "ast.rkt" "callback.rkt" "check-assembler.rkt"
-         (rename-in ffi/unsafe [-> _->]))
+         (rename-in ffi/unsafe [-> _->])
+         ffi/unsafe/define
+         racket/runtime-path)
 (require (submod "printer.rkt" private))
 
 ;; Check clang availability when required to fail fast.
@@ -36,7 +38,8 @@
 ;; Interpret (by assemblying, linking, and loading) x86-64 code
 ;; Assume: entry point is "entry"
 (define (asm-interp . is)
-  (asm-interp/io is #f))
+  (match (asm-interp/io is #f)
+    [(cons r out) r]))
 
 (define fopen
   (get-ffi-obj "fopen" (ffi-lib #f) (_fun _path _string/utf-8 _-> _pointer)))
@@ -77,9 +80,195 @@
                      r8 r9 r10 r11 r12 r13 r14 r15 instr flags)
                regs)))
 
+
+(define-runtime-path here ".")
+(define liba86-jit
+  (ffi-lib
+   (build-path here
+               "llvm-jit"
+               "lib"
+               (format "liba86_jit~a" (system-type 'so-suffix)))
+   #:custodian (current-custodian)))
+
+(define-cpointer-type _a86_jit_t)
+
+(define-cstruct _a86_jit_result
+  ([ok _int]
+   [value _int64]
+   [error_message _pointer]))
+
+(define-ffi-definer define-a86 liba86-jit)
+
+(define-a86 a86_jit_create
+  (_fun _-> _a86_jit_t))
+
+(define-a86 a86_jit_destroy
+  (_fun _a86_jit_t _-> _void))
+
+(define-a86 a86_jit_run
+  (_fun _a86_jit_t _string _string _-> _a86_jit_result))
+
+(define-a86 a86_jit_define_symbol
+  (_fun _a86_jit_t _string _pointer _-> _int))
+
+(define-a86 a86_jit_clear_symbols
+  (_fun _a86_jit_t _-> _int))
+
+(define (jit-clear-symbols! jit)
+  (unless (= 1 (a86_jit_clear_symbols jit))
+    (error 'a86-jit "failed to clear JIT symbols")))
+
+(define-a86 a86_jit_add_object_file
+  (_fun _a86_jit_t _path _-> _int))
+
+(define-a86 a86_jit_clear_object_files
+  (_fun _a86_jit_t _-> _int))
+
+(define (jit-define-symbol! jit name ptr)
+  (unless (= 1 (a86_jit_define_symbol jit name ptr))
+    (error 'a86-jit "failed to define JIT symbol ~a" name)))
+
+(define (jit-clear-object-files! jit)
+  (unless (= 1 (a86_jit_clear_object_files jit))
+    (error 'a86-jit "failed to clear JIT object files")))
+
+(define (jit-add-object-file! jit path)
+  (unless (= 1 (a86_jit_add_object_file jit path))
+    (error 'a86-jit "failed to add JIT object file ~a" path)))
+
+(define (decode-error-message p)
+  (if (ptr-equal? p #f)
+      "unknown error"
+      (cast p _pointer _string/utf-8)))
+
+(define (check-result who r)
+  (if (= 1 (a86_jit_result-ok r))
+      (a86_jit_result-value r)
+      (error who (decode-error-message (a86_jit_result-error_message r)))))
+
+(define the-jit
+  (or (a86_jit_create)
+      (error 'a86-jit "failed to create JIT instance")))
+
+
+
+(define (program->asm-string a)
+  (with-output-to-string
+    (λ ()
+      (parameterize ([current-shared? #t])
+        (asm-display (if *debug*? (debug-transform a) a))))))
+
+;; Returns two values: transformed program and unmangled entry name
+(define (prepare-program a)
+  (define init-label
+    (match (findf Label? a)
+      [(Label ($ l)) l]
+      [_ #f]))
+  (define global?
+    (and init-label
+         (ormap (match-lambda
+                  [(Global g) (eq? g init-label)]
+                  [_ #f])
+                a)))
+  (cond
+    [(and init-label global?)
+     (values (apply prog a) init-label)]
+    [else
+     (define i (symbol->label (gensym 'init)))
+     (values (apply prog (Global i) (Label i) a) i)]))
+
+(define (null-ptr? p)
+  (ptr-equal? p #f))
+
+(define (box-pointer p)
+  (define cell (malloc _pointer))
+  (ptr-set! cell _pointer p)
+  cell)
+
 ;; Asm ... String -> (cons Value String)
 ;; Like asm-interp, but uses given string for input and returns
 ;; result with string output
+(define (asm-interp/io a input)
+  (log-a86-info (~v a))
+
+  (define tin  (make-temporary-file "a86in~a"))
+  (define tout (make-temporary-file "a86out~a"))
+  (define in-port #f)
+  (define out-port #f)
+
+  (dynamic-wind
+   void
+   (λ ()
+     (call-with-output-file tin
+       #:exists 'truncate/replace
+       (λ (op) (display input op)))
+
+     (set! in-port (fopen tin "r"))
+     (set! out-port (fopen tout "w"))
+
+     (when (null-ptr? in-port)
+       (error 'asm-interp/io "failed to open input file"))
+
+     (when (null-ptr? out-port)
+       (error 'asm-interp/io "failed to open output file"))
+
+     (define-values (a* init-label)
+       (prepare-program a))
+
+     (define asm-str
+       (program->asm-string a*))
+
+     (jit-clear-symbols! the-jit)
+
+     (define in-cell (box-pointer in-port))
+     (define out-cell (box-pointer out-port))
+
+     (jit-define-symbol! the-jit "heap"  (box-pointer *heap*))
+     (jit-define-symbol! the-jit "from"  (box-pointer *heap*))
+     (jit-define-symbol! the-jit "to"    (box-pointer (ptr-add *heap* 10000 _int64)))
+     ;(jit-define-symbol! the-jit "types" (box-pointer types-ptr))
+     (jit-define-symbol! the-jit "in"    in-cell)
+     (jit-define-symbol! the-jit "out"   out-cell)
+
+     ;; error hook
+     (define error-handler-ptr
+       (function-ptr (λ () (raise 'err)) (_fun _-> _void)))
+     (jit-define-symbol! the-jit "error_handler" error-handler-ptr)
+
+     ;; debug hook
+     #;
+     (when *debug*?
+       (a86_jit_define_symbol the-jit
+                              log-label
+                              (function-ptr
+                               (λ ()
+                                 (log-a86-info
+                                  (apply show-state
+                                         (build-list 18
+                                                     (λ (i) (ptr-ref debug-log _int64 (add1 i)))))))
+                               (_fun _-> _void))))
+
+
+     (jit-clear-object-files! the-jit)
+     (for ([obj (current-objs)])
+       (jit-add-object-file! the-jit obj))
+
+     (define result
+       (with-handlers ([symbol? identity])
+         (check-result 'a86-jit
+                       (a86_jit_run the-jit asm-str (symbol->string init-label)))))
+
+     (fflush out-port)
+     (cons result (call-with-input-file tout port->string)))
+
+   ;; clean-up
+   (λ ()
+     (when out-port (fclose out-port) (set! out-port #f))
+     (when in-port  (fclose in-port)  (set! in-port #f))
+     (when (file-exists? tin)  (delete-file tin))
+     (when (file-exists? tout) (delete-file tout)))))
+
+#;
 (define (asm-interp/io a input)
 
   (log-a86-info (~v a))
