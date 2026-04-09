@@ -164,12 +164,34 @@ public:
     auto &jd = Jit_->getMainJITDylib();
     auto tracker = jd.createResourceTracker();
 
+    // 1. install absolute symbols into THIS jd / THIS tracker
     if (!installSymbols(jd, tracker)) {
       consumeError(tracker->remove());
       result.error_message = lastError();
       return result;
     }
 
+    // 2. add all current-objs into THIS tracker
+    for (const auto &path : ObjectFiles_) {
+      auto mbOrErr = MemoryBuffer::getFile(path);
+      if (!mbOrErr) {
+	setError("failed to read object file " + path + ": " +
+		 mbOrErr.getError().message());
+	consumeError(tracker->remove());
+	result.error_message = lastError();
+	return result;
+      }
+
+      if (auto err = Jit_->addObjectFile(tracker, std::move(*mbOrErr))) {
+	setError("failed to add object file " + path + ": " +
+		 toString(std::move(err)));
+	consumeError(tracker->remove());
+	result.error_message = lastError();
+	return result;
+      }
+    }
+
+    // 3. add the assembled student object into THIS tracker
     if (auto err = Jit_->addObjectFile(tracker, std::move(obj))) {
       setError(toString(std::move(err)));
       consumeError(tracker->remove());
@@ -177,7 +199,8 @@ public:
       return result;
     }
 
-    auto symOrErr = Jit_->lookup(entryName);
+    // 4. lookup entry in THIS jd explicitly
+    auto symOrErr = Jit_->lookup(jd, entryName);
     if (!symOrErr) {
       setError(toString(symOrErr.takeError()));
       consumeError(tracker->remove());
