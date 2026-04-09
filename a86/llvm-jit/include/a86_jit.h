@@ -70,6 +70,28 @@ int a86_jit_define_symbol(a86_jit_t* jit, const char* name, void* addr);
 int a86_jit_clear_symbols(a86_jit_t* jit);
 
 /*
+ * Stage an object file to be linked into the next run.
+ *
+ * The path must name a relocatable object file (for example, a `.o` file).
+ * Staged object files are loaded into the JIT together with the assembled
+ * program when `a86_jit_run` is called, and are discarded after that run
+ * completes.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_add_object_file(a86_jit_t* jit, const char* path);
+
+/*
+ * Remove all object files previously staged for future runs.
+ *
+ * This affects only object files queued for subsequent calls to
+ * `a86_jit_run`; it does not modify code that has already been executed.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_clear_object_files(a86_jit_t* jit);
+
+/*
  * Assemble and execute one assembly program.
  *
  * asm_text must be a complete assembly source file in the target assembler
@@ -81,8 +103,8 @@ int a86_jit_clear_symbols(a86_jit_t* jit);
  * The program is loaded temporarily for this call and then discarded.
  */
 a86_jit_result_t a86_jit_run(a86_jit_t* jit,
-                             const char* asm_text,
-                             const char* entry_name);
+			     const char* asm_text,
+			     const char* entry_name);
 
 #ifdef __cplusplus
 }  /* extern "C" */

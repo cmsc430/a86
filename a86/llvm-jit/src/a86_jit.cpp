@@ -78,8 +78,8 @@ public:
     }
 
     auto jitOrErr = orc::LLJITBuilder()
-                        .setJITTargetMachineBuilder(std::move(*jtmbOrErr))
-                        .create();
+			.setJITTargetMachineBuilder(std::move(*jtmbOrErr))
+			.create();
     if (!jitOrErr) {
       setError(toString(jitOrErr.takeError()));
       return false;
@@ -88,8 +88,8 @@ public:
     Jit_ = std::move(*jitOrErr);
 
     auto genOrErr =
-        orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            Jit_->getDataLayout().getGlobalPrefix());
+	orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+	    Jit_->getDataLayout().getGlobalPrefix());
     if (!genOrErr) {
       setError(toString(genOrErr.takeError()));
       return false;
@@ -118,6 +118,20 @@ public:
 
   bool clearSymbols() {
     Symbols_.clear();
+    return true;
+  }
+
+  bool addObjectFilePath(const char *path) {
+    if (!path) {
+      setError("addObjectFilePath: path is null");
+      return false;
+    }
+    ObjectFiles_.push_back(path);
+    return true;
+  }
+
+  bool clearObjectFiles() {
+    ObjectFiles_.clear();
     return true;
   }
 
@@ -192,10 +206,10 @@ private:
 
     auto mri = std::unique_ptr<MCRegisterInfo>(Target_->createMCRegInfo(TT_));
     auto mai =
-        std::unique_ptr<MCAsmInfo>(Target_->createMCAsmInfo(*mri, TT_, mcOpts));
+	std::unique_ptr<MCAsmInfo>(Target_->createMCAsmInfo(*mri, TT_, mcOpts));
     auto mii = std::unique_ptr<MCInstrInfo>(Target_->createMCInstrInfo());
     auto sti = std::unique_ptr<MCSubtargetInfo>(
-        Target_->createMCSubtargetInfo(TT_, CPU_, Features_));
+	Target_->createMCSubtargetInfo(TT_, CPU_, Features_));
 
     if (!mri || !mai || !mii || !sti) {
       setError("failed to create MC target components");
@@ -204,21 +218,21 @@ private:
 
     SourceMgr sm;
     sm.AddNewSourceBuffer(
-        MemoryBuffer::getMemBufferCopy(asmText, "<a86-jit-asm>"), SMLoc());
+	MemoryBuffer::getMemBufferCopy(asmText, "<a86-jit-asm>"), SMLoc());
 
     MCContext ctx(TT_, mai.get(), mri.get(), sti.get(), &sm, &mcOpts);
 
     auto mofi =
-        std::unique_ptr<MCObjectFileInfo>(Target_->createMCObjectFileInfo(ctx, true));
+	std::unique_ptr<MCObjectFileInfo>(Target_->createMCObjectFileInfo(ctx, true));
     ctx.setObjectFileInfo(mofi.get());
 
     SmallVector<char, 0> objBytes;
     raw_svector_ostream objOS(objBytes);
 
     auto mab = std::unique_ptr<MCAsmBackend>(
-        Target_->createMCAsmBackend(*sti, *mri, mcOpts));
+	Target_->createMCAsmBackend(*sti, *mri, mcOpts));
     auto mce =
-        std::unique_ptr<MCCodeEmitter>(Target_->createMCCodeEmitter(*mii, ctx));
+	std::unique_ptr<MCCodeEmitter>(Target_->createMCCodeEmitter(*mii, ctx));
 
     if (!mab || !mce) {
       setError("failed to create MC backend or code emitter");
@@ -228,8 +242,8 @@ private:
     auto ow = mab->createObjectWriter(objOS);
 
     auto streamer = std::unique_ptr<MCStreamer>(
-        Target_->createMCObjectStreamer(
-            TT_, ctx, std::move(mab), std::move(ow), std::move(mce), *sti));
+	Target_->createMCObjectStreamer(
+	    TT_, ctx, std::move(mab), std::move(ow), std::move(mce), *sti));
 
     if (!streamer) {
       setError("failed to create object streamer");
@@ -237,9 +251,9 @@ private:
     }
 
     auto parser =
-        std::unique_ptr<MCAsmParser>(createMCAsmParser(sm, ctx, *streamer, *mai));
+	std::unique_ptr<MCAsmParser>(createMCAsmParser(sm, ctx, *streamer, *mai));
     auto tap = std::unique_ptr<MCTargetAsmParser>(
-        Target_->createMCAsmParser(*sti, *parser, *mii, mcOpts));
+	Target_->createMCAsmParser(*sti, *parser, *mii, mcOpts));
 
     if (!parser || !tap) {
       setError("failed to create asm parser");
@@ -254,7 +268,7 @@ private:
     }
 
     return MemoryBuffer::getMemBufferCopy(
-        StringRef(objBytes.data(), objBytes.size()), "<a86-jit-object>");
+	StringRef(objBytes.data(), objBytes.size()), "<a86-jit-object>");
   }
 
   bool installSymbols(orc::JITDylib &jd, orc::ResourceTrackerSP tracker) {
@@ -270,7 +284,7 @@ private:
       auto mangled = es.intern(mangle(prefix, name));
       auto jitAddr = orc::ExecutorAddr::fromPtr(addr);
       symbolMap[mangled] =
-          orc::ExecutorSymbolDef(jitAddr, JITSymbolFlags::Exported);
+	  orc::ExecutorSymbolDef(jitAddr, JITSymbolFlags::Exported);
     }
 
     if (auto err = jd.define(orc::absoluteSymbols(std::move(symbolMap)), tracker)) {
@@ -300,6 +314,7 @@ private:
   std::unique_ptr<orc::LLJIT> Jit_;
   std::string LastError_;
   std::unordered_map<std::string, void *> Symbols_;
+  std::vector<std::string> ObjectFiles_;
 };
 
 }  // namespace
@@ -352,9 +367,23 @@ int a86_jit_clear_symbols(a86_jit_t *jit) {
   return jit->impl->clearSymbols() ? 1 : 0;
 }
 
+int a86_jit_add_object_file(a86_jit_t *jit, const char *path) {
+  if (!jit || !jit->impl) {
+    return 0;
+  }
+  return jit->impl->addObjectFilePath(path) ? 1 : 0;
+}
+
+int a86_jit_clear_object_files(a86_jit_t *jit) {
+  if (!jit || !jit->impl) {
+    return 0;
+  }
+  return jit->impl->clearObjectFiles() ? 1 : 0;
+}
+
 a86_jit_result_t a86_jit_run(a86_jit_t *jit,
-                             const char *asm_text,
-                             const char *entry_name) {
+			     const char *asm_text,
+			     const char *entry_name) {
   a86_jit_result_t result{};
   result.ok = 0;
   result.value = 0;
