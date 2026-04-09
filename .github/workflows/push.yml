@@ -33,16 +33,6 @@ jobs:
         clang --version
         gcc --version
 
-    - name: Cache Racket packages
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.racket
-          ~/.cache/racket
-          ~/.local/share/racket
-          ~/Library/Caches/Racket
-        key: racket-${{ matrix.racket-variant }}-${{ matrix.racket-version }}-${{ matrix.os }}
-
     - name: Install a86 package
       run: |
         raco pkg install --no-docs ../a86/
