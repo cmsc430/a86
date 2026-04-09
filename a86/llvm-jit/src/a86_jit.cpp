@@ -150,7 +150,7 @@ public:
     auto &jd = Jit_->getMainJITDylib();
     auto tracker = jd.createResourceTracker();
 
-    if (!installSymbols(jd)) {
+    if (!installSymbols(jd, tracker)) {
       consumeError(tracker->remove());
       result.error_message = lastError();
       return result;
@@ -257,7 +257,7 @@ private:
         StringRef(objBytes.data(), objBytes.size()), "<a86-jit-object>");
   }
 
-  bool installSymbols(orc::JITDylib &jd) {
+  bool installSymbols(orc::JITDylib &jd, orc::ResourceTrackerSP tracker) {
     if (Symbols_.empty()) {
       return true;
     }
@@ -270,10 +270,10 @@ private:
       auto mangled = es.intern(mangle(prefix, name));
       auto jitAddr = orc::ExecutorAddr::fromPtr(addr);
       symbolMap[mangled] =
-          orc::ExecutorSymbolDef(jitAddr, JITSymbolFlags::Exported);      
+          orc::ExecutorSymbolDef(jitAddr, JITSymbolFlags::Exported);
     }
 
-    if (auto err = jd.define(orc::absoluteSymbols(std::move(symbolMap)))) {
+    if (auto err = jd.define(orc::absoluteSymbols(std::move(symbolMap)), tracker)) {
       setError(toString(std::move(err)));
       return false;
     }
