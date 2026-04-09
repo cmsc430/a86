@@ -160,11 +160,29 @@
       (a86_jit_result-value r)
       (error who (decode-error-message (a86_jit_result-error_message r)))))
 
-(define the-jit
-  (or (a86_jit_create)
-      (error 'a86-jit "failed to create JIT instance")))
+(define the-jit #f)
 
+(define (reset-jit!)
+  (when the-jit
+    (a86_jit_destroy the-jit))
+  (set! the-jit
+        (or (a86_jit_create)
+            (error 'a86-jit "failed to create JIT instance"))))
 
+(reset-jit!)
+
+(define (run-jit! asm-str init-label)
+  (with-handlers ([symbol?
+                   (λ (s)
+                     (reset-jit!)
+                     s)]
+                  [exn:fail?
+                   (λ (e)
+                     (reset-jit!)
+                     (raise e))])
+    (guard-foreign-escape
+     (check-result 'a86-jit
+                   (a86_jit_run the-jit asm-str (symbol->string init-label))))))
 
 (define (program->asm-string a)
   (with-output-to-string
@@ -243,10 +261,9 @@
      (jit-set-global! the-jit "out"   out-port)
 
      ;; error hook
-     #;#;
      (define error-handler-ptr
        (function-ptr (λ () (raise 'err)) (_fun _-> _void)))
-     (jit-define-symbol! the-jit "error_handler" error-handler-ptr)
+     (jit-set-global! the-jit "error_handler" error-handler-ptr)
 
      ;; debug hook
      #;
@@ -267,9 +284,7 @@
        (jit-add-object-file! the-jit obj))
 
      (define result
-       (with-handlers ([symbol? identity])
-         (check-result 'a86-jit
-                       (a86_jit_run the-jit asm-str (symbol->string init-label)))))
+       (run-jit! asm-str init-label))
 
      (fflush out-port)
      (cons result (call-with-input-file tout port->string)))
