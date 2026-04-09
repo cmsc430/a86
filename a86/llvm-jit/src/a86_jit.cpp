@@ -121,6 +121,35 @@ public:
     return true;
   }
 
+  bool setGlobal(const char *name, void *value) {
+    if (!name) {
+      setError("setGlobal: name is null");
+      return false;
+    }
+    Globals_[std::string(name)] = value;
+    return true;
+  }
+
+  bool clearGlobals() {
+    Globals_.clear();
+    return true;
+  }
+
+  bool patchGlobals(orc::JITDylib &jd) {
+    for (const auto &[name, value] : Globals_) {
+      auto symOrErr = Jit_->lookup(jd, name);
+      if (!symOrErr) {
+        consumeError(symOrErr.takeError());
+        continue;
+      }
+
+      auto *slot = symOrErr->toPtr<void **>();
+      *slot = value;
+    }
+
+    return true;
+  }
+
   bool addObjectFilePath(const char *path) {
     if (!path) {
       setError("addObjectFilePath: path is null");
@@ -199,7 +228,14 @@ public:
       return result;
     }
 
-    // 4. lookup entry in THIS jd explicitly
+    // 4. patch glogbals in linked objects
+    if (!patchGlobals(jd)) {
+      consumeError(tracker->remove());
+      result.error_message = lastError();
+      return result;
+    }
+
+    // 5. lookup entry in THIS jd explicitly
     auto symOrErr = Jit_->lookup(jd, entryName);
     if (!symOrErr) {
       setError(toString(symOrErr.takeError()));
@@ -337,6 +373,7 @@ private:
   std::unique_ptr<orc::LLJIT> Jit_;
   std::string LastError_;
   std::unordered_map<std::string, void *> Symbols_;
+  std::unordered_map<std::string, void *> Globals_;
   std::vector<std::string> ObjectFiles_;
 };
 
@@ -388,6 +425,20 @@ int a86_jit_clear_symbols(a86_jit_t *jit) {
     return 0;
   }
   return jit->impl->clearSymbols() ? 1 : 0;
+}
+
+int a86_jit_set_global(a86_jit_t *jit, const char *name, void *value) {
+  if (!jit || !jit->impl) {
+    return 0;
+  }
+  return jit->impl->setGlobal(name, value) ? 1 : 0;
+}
+
+int a86_jit_clear_globals(a86_jit_t *jit) {
+  if (!jit || !jit->impl) {
+    return 0;
+  }
+  return jit->impl->clearGlobals() ? 1 : 0;
 }
 
 int a86_jit_add_object_file(a86_jit_t *jit, const char *path) {

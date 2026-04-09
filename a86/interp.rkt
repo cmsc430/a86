@@ -114,6 +114,12 @@
 (define-a86 a86_jit_clear_symbols
   (_fun _a86_jit_t _-> _int))
 
+(define-a86 a86_jit_set_global
+  (_fun _a86_jit_t _string _pointer _-> _int))
+
+(define-a86 a86_jit_clear_globals
+  (_fun _a86_jit_t _-> _int))
+
 (define (jit-clear-symbols! jit)
   (unless (= 1 (a86_jit_clear_symbols jit))
     (error 'a86-jit "failed to clear JIT symbols")))
@@ -127,6 +133,14 @@
 (define (jit-define-symbol! jit name ptr)
   (unless (= 1 (a86_jit_define_symbol jit name ptr))
     (error 'a86-jit "failed to define JIT symbol ~a" name)))
+
+(define (jit-clear-globals! jit)
+  (unless (= 1 (a86_jit_clear_globals jit))
+    (error 'a86-jit "failed to clear JIT globals")))
+
+(define (jit-set-global! jit name ptr)
+  (unless (= 1 (a86_jit_set_global jit name ptr))
+    (error 'a86-jit "failed to set JIT global ~a" name)))
 
 (define (jit-clear-object-files! jit)
   (unless (= 1 (a86_jit_clear_object_files jit))
@@ -219,18 +233,17 @@
        (program->asm-string a*))
 
      (jit-clear-symbols! the-jit)
+     (jit-clear-globals! the-jit)
 
-     (define in-cell (box-pointer in-port))
-     (define out-cell (box-pointer out-port))
-
-     (jit-define-symbol! the-jit "heap"  (box-pointer *heap*))
-     (jit-define-symbol! the-jit "from"  (box-pointer *heap*))
-     (jit-define-symbol! the-jit "to"    (box-pointer (ptr-add *heap* 10000 _int64)))
-     ;(jit-define-symbol! the-jit "types" (box-pointer types-ptr))
-     (jit-define-symbol! the-jit "in"    in-cell)
-     (jit-define-symbol! the-jit "out"   out-cell)
+     (jit-set-global! the-jit "heap"  *heap*)
+     (jit-set-global! the-jit "from"  *heap*)
+     (jit-set-global! the-jit "to"    (ptr-add *heap* 10000 _int64))
+     ;(jit-set-global! the-jit "types" (box-pointer types-ptr))
+     (jit-set-global! the-jit "in"    in-port)
+     (jit-set-global! the-jit "out"   out-port)
 
      ;; error hook
+     #;#;
      (define error-handler-ptr
        (function-ptr (λ () (raise 'err)) (_fun _-> _void)))
      (jit-define-symbol! the-jit "error_handler" error-handler-ptr)

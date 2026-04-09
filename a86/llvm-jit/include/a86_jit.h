@@ -70,6 +70,24 @@ int a86_jit_define_symbol(a86_jit_t* jit, const char* name, void* addr);
 int a86_jit_clear_symbols(a86_jit_t* jit);
 
 /*
+ * Stage a global variable assignment for the next run.
+ *
+ * If the named symbol is defined by one of the linked object files, then
+ * `a86_jit_run` will store `value` into that global before calling the entry
+ * point. If the symbol is not present, the assignment is ignored.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_set_global(a86_jit_t* jit, const char* name, void* value);
+
+/*
+ * Remove all global assignments previously staged for future runs.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+int a86_jit_clear_globals(a86_jit_t* jit);
+
+/*
  * Stage an object file to be linked into the next run.
  *
  * The path must name a relocatable object file (for example, a `.o` file).
