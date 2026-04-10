@@ -45,7 +45,7 @@ jobs:
     - name: Install langs package
       run: |
         # This *should* use the locally installed a86
-        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#main'
+        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#bug-fix'
 
     - name: Run tests
       run: |
