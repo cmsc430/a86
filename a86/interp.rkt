@@ -209,6 +209,15 @@
      (define i (symbol->label (gensym 'init)))
      (values (apply prog (Global i) (Label i) a) i)]))
 
+(define (resolve-obj-path p)
+  (define path
+    (cond
+      [(path? p) p]
+      [(string? p) (string->path p)]
+      [else (error 'asm-interp "invalid object-file path: ~e" p)]))
+  (path->string
+   (simple-form-path path)))
+
 (define (null-ptr? p)
   (ptr-equal? p #f))
 
@@ -281,7 +290,7 @@
 
      (jit-clear-object-files! the-jit)
      (for ([obj (current-objs)])
-       (jit-add-object-file! the-jit obj))
+       (jit-add-object-file! the-jit (resolve-obj-path obj)))
 
      (define result
        (run-jit! asm-str init-label))
