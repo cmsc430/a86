@@ -5,5 +5,6 @@
 (define scribblings '(("scribblings/a86.scrbl")))
 (define test-omit-paths '("scribblings/"
                           "test/expressions.rkt"
-                          "test/sections.rkt"))
+                          "test/sections.rkt"
+                          "stepper.rkt"))
 (define pre-install-collection "pre-install.rkt")
