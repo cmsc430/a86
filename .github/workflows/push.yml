@@ -49,5 +49,5 @@ jobs:
 
     - name: Run tests
       run: |
-        raco test -j 4 -p a86
+        xvfb-run raco test -j 4 -p a86
         xvfb-run raco test -j 4 -p langs
