@@ -43,7 +43,11 @@ jobs:
         # This *should* use the locally installed a86
         raco pkg install --auto 'https://github.com/cmsc430/langs.git?#bug-fix'
 
+    - name: Install libssl
+      run: |
+        sudo apt install -y libssl-dev
+
     - name: Run tests
       run: |
-        xvfb-run raco test -j 4 -p a86
+        raco test -j 4 -p a86
         xvfb-run raco test -j 4 -p langs
