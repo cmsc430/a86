@@ -29,10 +29,6 @@ jobs:
       with:
         llvm-version: 22
 
-    - name: Install libssl
-      run: |
-        sudo apt install -y libssl-dev
-
     - name: Version info
       run: |
         clang --version
