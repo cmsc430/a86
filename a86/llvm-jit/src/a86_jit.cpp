@@ -87,9 +87,15 @@ public:
 
     Jit_ = std::move(*jitOrErr);
 
+    Jit_->getExecutionSession().setErrorReporter(
+	[this](Error err) {
+	  recordSessionError(std::move(err));
+	});
+
     auto genOrErr =
 	orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
 	    Jit_->getDataLayout().getGlobalPrefix());
+
     if (!genOrErr) {
       setError(toString(genOrErr.takeError()));
       return false;
@@ -139,8 +145,8 @@ public:
     for (const auto &[name, value] : Globals_) {
       auto symOrErr = Jit_->lookup(jd, name);
       if (!symOrErr) {
-        consumeError(symOrErr.takeError());
-        continue;
+	consumeError(symOrErr.takeError());
+	continue;
       }
 
       auto *slot = symOrErr->toPtr<void **>();
@@ -166,17 +172,18 @@ public:
 
   a86_jit_result_t run(const char *asmText, const char *entryName, void *heap) {
     clearError();
+    clearSessionError();
     a86_jit_result_t result{};
 
     if (LastRunTracker_) {
       if (auto err = LastRunTracker_->remove()) {
-        setError(toString(std::move(err)));
-        LastRunTracker_.reset();
+	setError(toString(std::move(err)));
+	LastRunTracker_.reset();
 
-        result.ok = 0;
-        result.value = 0;
-        result.error_message = lastError();
-        return result;
+	result.ok = 0;
+	result.value = 0;
+	result.error_message = lastError();
+	return result;
       }
       LastRunTracker_.reset();
     }
@@ -251,7 +258,10 @@ public:
     // 5. lookup entry in THIS jd explicitly
     auto symOrErr = Jit_->lookup(jd, entryName);
     if (!symOrErr) {
-      setError(toString(symOrErr.takeError()));
+      std::string highLevel =
+	  "lookup of entry symbol '" + std::string(entryName) +
+	  "' failed: " + toString(symOrErr.takeError());
+      setError(combineWithSessionError(std::move(highLevel)));
       consumeError(tracker->remove());
       result.error_message = lastError();
       return result;
@@ -376,6 +386,30 @@ private:
     LastError_ = std::move(msg);
   }
 
+  void clearSessionError() {
+    LastSessionError_.clear();
+  }
+
+  void recordSessionError(Error err) {
+    std::string msg = toString(std::move(err));
+    if (LastSessionError_.empty()) {
+      LastSessionError_ = std::move(msg);
+    } else {
+      LastSessionError_ += "\n";
+      LastSessionError_ += msg;
+    }
+  }
+
+  std::string combineWithSessionError(std::string highLevel) const {
+    if (LastSessionError_.empty()) {
+      return highLevel;
+    }
+    if (highLevel.empty()) {
+      return LastSessionError_;
+    }
+    return LastSessionError_ + "\n" + highLevel;
+  }
+
   std::string TripleName_;
   Triple TT_;
   const Target *Target_ = nullptr;
@@ -387,6 +421,7 @@ private:
   std::unordered_map<std::string, void *> Globals_;
   std::vector<std::string> ObjectFiles_;
   orc::ResourceTrackerSP LastRunTracker_;
+  std::string LastSessionError_;
 };
 
 }  // namespace
