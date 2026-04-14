@@ -6,7 +6,7 @@
   (define coll-dir
     (simplify-path (path->complete-path collection-dir)))
   (check-x86)
-  (build-jit (build-path coll-dir "llvm-jit")))
+  (build-jit (build-path coll-dir "native")))
 
 (define (check-x86)
   (unless (eq? 'x86_64 (system-type 'arch))
@@ -29,7 +29,7 @@
 
   (unless (directory-exists? jit-dir)
     (error 'build-jit
-           (format "expected llvm-jit directory at ~a" jit-dir)))
+           (format "expected native directory at ~a" jit-dir)))
 
   (unless (file-exists? makefile-path)
     (error 'build-jit

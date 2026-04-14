@@ -1,7 +1,8 @@
 #lang scribble/manual
 @(require scribble/bnf)
 
-@(require (for-label (except-in racket compile)
+@(require (for-label (except-in racket compile ->)
+                     ffi/unsafe
 		     a86/ast
 		     a86/registers
 		     a86/printer
@@ -152,7 +153,7 @@ be well-formed, which means:
 
 
 @defproc[(seq [x (or/c instruction? (listof instruction?))] ...) (listof instruction?)]{
- A convenience function for splicing togeter instructions and lists of instructions.
+ A convenience function for splicing together instructions and lists of instructions.
 
   @ex[
  (seq)
@@ -228,8 +229,10 @@ correspond to actual execuable @secref{Instructions}.
 
 @defstruct*[Extern ([x label?])]{
 
- Declares an external label.  External labels may be used, but not defined
- within the program.
+ Declares an external label.  External labels may be used, but not
+ defined within the program.  In order to run a program, all external
+ labels must be resolved using either @racket[current-externs] or
+ @racket[current-objects]. 
 
 }
 
@@ -1842,15 +1845,10 @@ written to with the value 42, before being dereferenced and returned:
 
 @defmodule[a86/interp]
 
+@subsection{Running assembly programs}
+
 It is possible to run a86 @secref["Programs"] from within
 Racket using @racket[asm-interp].
-
-Using @racket[asm-interp] comes with significant overhead,
-so it's unlikely you'll want to implement Racket
-functionality in assembly code via @racket[asm-interp].
-Rather this is a utility for interactively exploring the
-behavior of assembly code and writing tests for functions
-that generate assembly code.
 
 If you have code written in a86 that you would like to
 execute directly, you should instead use the
@@ -1925,6 +1923,8 @@ The simplest form of interpreting an a86 program is to use
 
 }
 
+@subsection{Resolving external labels}
+
 It is often the case that we want our assembly programs to
 interact with the oustide or to use functionality
 implemented in other programming languages. For that reason,
@@ -1932,18 +1932,18 @@ it is possible to link in object files to the running of an
 a86 program.
 
 The mechanism for controlling which objects should be linked
-in is a parameter called @racket[current-objs], which
+in is a parameter called @racket[current-objects], which
 contains a list of paths to object files which are linked to
 the assembly code when it is interpreted.
 
-@defparam[current-objs objs (listof path-string?) #:value '()]{
+@defparam[current-objects objs (listof path-string?) #:value '()]{
 
 Parameter that controls object files that will be linked in to
 assembly code when running @racket[asm-interp].
 
 }
 
-For example, let's implement a GCD function in C:
+For example, suppose there's a GCD function in C:
 
 @filebox-include[fancy-c a86 "gcd.c"]
 
@@ -1955,12 +1955,12 @@ The option @tt{-fPIC} is important; it causes the C compiler
 to emit ``position independent code,'' which is what enables
 Racket to dynamically load and run the code.
 
-Once the object file exists, using the @racket[current-objs]
+Once the object file exists, using the @racket[current-objects]
 parameter, we can run code that uses things defined in the C
 code:
 
 @ex[
-(parameterize ((current-objs '("gcd.o")))
+(parameterize ((current-objects (list "gcd.o")))
   (asm-interp (Extern 'gcd)
 	      (Mov 'rdi 11571)
 	      (Mov 'rsi 1767)
@@ -1969,11 +1969,7 @@ code:
 	      (Add 'rsp 8)
 	      (Ret)))]
 
-This will be particularly relevant for writing a compiler
-where emitted code will make use of functionality defined in
-a runtime system.
-
-Note that if you forget to set @racket[current-objs], you will get a
+Note that if you forget to set @racket[current-objects], you will get a
 linking error saying a symbol is undefined:
 
 @ex[
@@ -1985,6 +1981,55 @@ linking error saying a symbol is undefined:
 	     (Call 'gcd)
 	     (Add 'rsp 8)
 	     (Ret)))]
+
+
+Sometimes that other programming language we want our assembly programs to interact with
+is Racket.  In this case, we can actually resolve external symbols in the assembly code
+to Racket values.
+
+For example, suppose there's a GCD function in Racket:
+
+@ex[
+(define (gcd n1 n2)
+  (if (zero? n2)
+      n1
+      (gcd n2 (modulo n1 n2))))]
+
+We can define a @racket[host-gcd] function, which essentially attaches
+a C-style type declaration (using bindings from the FFI) to this
+function and the external symbol @racket['gcd]:
+
+@defstruct*[extern ([name symbol?] [value any/c] [type ctype?])]{
+
+Structure for representing a Racket-hosted external.}
+
+@ex[
+(require ffi/unsafe)
+(define host-gcd
+  (extern 'gcd gcd (_fun _int64 _int64 -> _int64)))]
+
+
+Then we can inform the interpreter to resolve the @racket['gcd]
+external label to @racket[host-gcd] by using the
+@racket[current-externs] parameter.
+
+@defparam[current-externs externs (listof extern?) #:value '()]{
+
+Parameter that controls Racket-hosted externs that will be linked in to
+assembly code when running @racket[asm-interp].
+
+
+@ex[
+(parameterize ([current-externs (list host-gcd)])
+  (asm-interp (Extern 'gcd)
+              (Mov 'rdi 11571)
+              (Mov 'rsi 1767)
+              (Sub 'rsp 8)
+              (Call 'gcd)
+              (Add 'rsp 8)
+              (Ret)))]
+
+}
 
 
 @defproc[(asm-interp/io [is (listof instruction?)] [in string?]) (cons integer? string?)]{
