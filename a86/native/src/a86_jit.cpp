@@ -205,7 +205,6 @@ struct a86_jit {
   std::unique_ptr<orc::LLJIT> jit;
   orc::JITDylib *support_jd = nullptr;
   std::shared_ptr<shared_error_state> errs = std::make_shared<shared_error_state>();
-  std::vector<orc::JITDylib *> dylib_pool;
 
   void clear_error() { errs->clear_error_only(); }
   void clear_session_error() { errs->clear_session_error_only(); }
@@ -339,20 +338,14 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     return nullptr;
   }
 
-  orc::JITDylib *program_jd = nullptr;
-  if (!jit->dylib_pool.empty()) {
-    program_jd = jit->dylib_pool.back();
-    jit->dylib_pool.pop_back();
-    program_jd->setLinkOrder({});
-  } else {
-    std::string jd_name = "a86_prog_" + std::to_string(NextLoadId++);
-    auto jd_or_err = jit->jit->createJITDylib(jd_name);
-    if (!jd_or_err) {
-      jit->set_error(toString(jd_or_err.takeError()));
-      return nullptr;
-    }
-    program_jd = &*jd_or_err;
+  // Create a fresh JITDylib for this program - no pooling!
+  std::string jd_name = "a86_prog_" + std::to_string(NextLoadId++);
+  auto jd_or_err = jit->jit->createJITDylib(jd_name);
+  if (!jd_or_err) {
+    jit->set_error(toString(jd_or_err.takeError()));
+    return nullptr;
   }
+  orc::JITDylib *program_jd = &*jd_or_err;
   auto tracker = program_jd->createResourceTracker();
   program_jd->addToLinkOrder(*jit->support_jd);
 
@@ -361,11 +354,7 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
       consumeError(tracker->remove());
       tracker.reset();
     }
-    if (program_jd) {
-      program_jd->setLinkOrder({});
-      jit->dylib_pool.push_back(program_jd);
-      program_jd = nullptr;
-    }
+    // No pooling - JITDylib will be cleaned up when tracker removes all resources
   };
 
   // Install host-provided externs as absolute symbols.
@@ -432,13 +421,12 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
 void a86_program_unload(a86_program_t *program) {
   if (program) {
     if (program->tracker && program->parent && program->parent->jit) {
+      // Remove all resources tracked to this program.
+      // This effectively empties the JITDylib and allows ORC to clean up.
       consumeError(program->tracker->remove());
       program->tracker.reset();
-      if (program->program_jd) {
-        program->program_jd->setLinkOrder({});
-        program->parent->dylib_pool.push_back(program->program_jd);
-        program->program_jd = nullptr;
-      }
+      // Do NOT return JITDylib to a pool - let ORC manage its lifecycle.
+      program->program_jd = nullptr;
     }
     delete program;
   }
