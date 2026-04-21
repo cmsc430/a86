@@ -1,6 +1,5 @@
 #include "a86_jit.h"
 
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -58,10 +57,8 @@ struct a86_program {
   std::string last_error;
   std::string last_session_error;
 
+  // Only used to serialize lookup vs unload on this one program object.
   std::mutex mu;
-  std::condition_variable cv;
-  bool unloading = false;
-  int active_calls = 0;
 
   void clear_error() { last_error.clear(); }
 
@@ -401,15 +398,11 @@ void a86_program_unload(a86_program_t *program) {
     return;
   }
 
-  {
-    std::unique_lock<std::mutex> lock(program->mu);
-    program->unloading = true;
-    program->cv.wait(lock, [&] { return program->active_calls == 0; });
+  std::lock_guard<std::mutex> lock(program->mu);
 
-    if (program->tracker) {
-      consumeError(program->tracker->remove());
-      program->tracker.reset();
-    }
+  if (program->tracker) {
+    consumeError(program->tracker->remove());
+    program->tracker.reset();
   }
 
   delete program;
@@ -447,23 +440,13 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   orc::ExecutorAddr entry_addr;
 
   {
-    std::unique_lock<std::mutex> lock(program->mu);
-    if (program->unloading) {
-      result.error_message = "program is unloading";
-      return result;
-    }
+    std::lock_guard<std::mutex> lock(program->mu);
 
-    ++program->active_calls;
     program->clear_error();
     program->clear_session_error();
 
     auto sym_or_err = program->jit->lookup(*program->program_jd, label);
     if (!sym_or_err) {
-      --program->active_calls;
-      if (program->active_calls == 0) {
-        program->cv.notify_all();
-      }
-
       std::string high =
           "lookup of label '" + std::string(label) +
           "' failed: " + toString(sym_or_err.takeError());
@@ -516,25 +499,10 @@ a86_call_result_t a86_program_call(a86_program_t *program,
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
       break;
     }
-    default: {
-      std::unique_lock<std::mutex> lock(program->mu);
-      --program->active_calls;
-      if (program->active_calls == 0) {
-        program->cv.notify_all();
-      }
-      program->set_error(
-          "a86_program_call currently supports at most 6 arguments");
-      result.error_message = program->error_cstr();
+    default:
+      result.error_message =
+          "a86_program_call currently supports at most 6 arguments";
       return result;
-    }
-  }
-
-  {
-    std::unique_lock<std::mutex> lock(program->mu);
-    --program->active_calls;
-    if (program->active_calls == 0) {
-      program->cv.notify_all();
-    }
   }
 
   result.ok = 1;
