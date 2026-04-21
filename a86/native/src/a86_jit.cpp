@@ -1,10 +1,13 @@
 #include "a86_jit.h"
 
-#include <cstdint>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Config/llvm-config.h"
@@ -36,42 +39,39 @@
 
 using namespace llvm;
 
-struct a86_jit {
-  std::string last_error;
+namespace {
 
-  void clear_error() { last_error.clear(); }
+std::atomic<uint64_t> NextCallId{0};
 
-  void set_error(std::string msg) { last_error = std::move(msg); }
-
-  const char *error_cstr() const {
-    return last_error.empty() ? nullptr : last_error.c_str();
-  }
-};
-
-struct a86_program {
-  std::unique_ptr<orc::LLJIT> jit;
-  orc::JITDylib *support_jd = nullptr;
-  orc::JITDylib *program_jd = nullptr;
-  orc::ResourceTrackerSP tracker;
-
+struct shared_error_state {
+  mutable std::mutex mu;
   std::string last_error;
   std::string last_session_error;
 
-  // Only used to serialize lookup vs unload on this one program object.
-  std::mutex mu;
+  void clear() {
+    std::lock_guard<std::mutex> lock(mu);
+    last_error.clear();
+    last_session_error.clear();
+  }
 
-  void clear_error() { last_error.clear(); }
+  void clear_error_only() {
+    std::lock_guard<std::mutex> lock(mu);
+    last_error.clear();
+  }
 
-  void clear_session_error() { last_session_error.clear(); }
+  void clear_session_error_only() {
+    std::lock_guard<std::mutex> lock(mu);
+    last_session_error.clear();
+  }
 
-  void set_error(std::string msg) { last_error = std::move(msg); }
-
-  const char *error_cstr() const {
-    return last_error.empty() ? nullptr : last_error.c_str();
+  void set_error(std::string msg) {
+    std::lock_guard<std::mutex> lock(mu);
+    last_error = std::move(msg);
   }
 
   void record_session_error(Error err) {
     std::string msg = toString(std::move(err));
+    std::lock_guard<std::mutex> lock(mu);
     if (last_session_error.empty()) {
       last_session_error = std::move(msg);
     } else {
@@ -81,6 +81,7 @@ struct a86_program {
   }
 
   std::string combine_with_session_error(std::string high_level) const {
+    std::lock_guard<std::mutex> lock(mu);
     if (last_session_error.empty()) {
       return high_level;
     }
@@ -89,14 +90,21 @@ struct a86_program {
     }
     return last_session_error + "\n" + high_level;
   }
+
+  const char *error_cstr_unsafe() const {
+    return last_error.empty() ? nullptr : last_error.c_str();
+  }
 };
 
-namespace {
+struct extern_binding_copy {
+  std::string name;
+  a86_extern_kind_t kind;
+  void *value;
+};
 
 static std::unique_ptr<MemoryBuffer>
-assemble_to_object(a86_program *prog, StringRef asm_text) {
-  prog->clear_error();
-  prog->clear_session_error();
+assemble_to_object(shared_error_state *errs, StringRef asm_text) {
+  errs->clear_session_error_only();
 
   std::string triple_name = sys::getProcessTriple();
   Triple TT(triple_name);
@@ -104,7 +112,7 @@ assemble_to_object(a86_program *prog, StringRef asm_text) {
   std::string lookup_err;
   const Target *target = TargetRegistry::lookupTarget(TT, lookup_err);
   if (!target) {
-    prog->set_error("lookupTarget failed: " + lookup_err);
+    errs->set_error("lookupTarget failed: " + lookup_err);
     return nullptr;
   }
 
@@ -124,7 +132,6 @@ assemble_to_object(a86_program *prog, StringRef asm_text) {
 #endif
 
   std::string cpu = sys::getHostCPUName().str();
-
   auto host_features = sys::getHostCPUFeatures();
   SubtargetFeatures features;
   for (const auto &kv : host_features) {
@@ -141,13 +148,12 @@ assemble_to_object(a86_program *prog, StringRef asm_text) {
 #endif
 
   if (!mri || !mai || !mii || !sti) {
-    prog->set_error("failed to create MC target components");
+    errs->set_error("failed to create MC target components");
     return nullptr;
   }
 
   SourceMgr sm;
-  sm.AddNewSourceBuffer(
-      MemoryBuffer::getMemBufferCopy(asm_text, "<a86-jit-asm>"), SMLoc());
+  sm.AddNewSourceBuffer(MemoryBuffer::getMemBufferCopy(asm_text, ""), SMLoc());
 
   MCContext ctx(TT, mai.get(), mri.get(), sti.get(), &sm, &mc_opts);
 
@@ -160,125 +166,127 @@ assemble_to_object(a86_program *prog, StringRef asm_text) {
 
   auto mab = std::unique_ptr<MCAsmBackend>(
       target->createMCAsmBackend(*sti, *mri, mc_opts));
-  auto mce =
-      std::unique_ptr<MCCodeEmitter>(target->createMCCodeEmitter(*mii, ctx));
-
+  auto mce = std::unique_ptr<MCCodeEmitter>(target->createMCCodeEmitter(*mii, ctx));
   if (!mab || !mce) {
-    prog->set_error("failed to create MC backend or code emitter");
+    errs->set_error("failed to create MC backend or code emitter");
     return nullptr;
   }
 
   auto obj_writer = mab->createObjectWriter(obj_stream);
-
   auto streamer = std::unique_ptr<MCStreamer>(target->createMCObjectStreamer(
       TT, ctx, std::move(mab), std::move(obj_writer), std::move(mce), *sti));
-
   if (!streamer) {
-    prog->set_error("failed to create object streamer");
+    errs->set_error("failed to create object streamer");
     return nullptr;
   }
 
-  auto parser =
-      std::unique_ptr<MCAsmParser>(createMCAsmParser(sm, ctx, *streamer, *mai));
+  auto parser = std::unique_ptr<MCAsmParser>(createMCAsmParser(sm, ctx, *streamer, *mai));
   auto tap = std::unique_ptr<MCTargetAsmParser>(
       target->createMCAsmParser(*sti, *parser, *mii, mc_opts));
-
   if (!parser || !tap) {
-    prog->set_error("failed to create asm parser");
+    errs->set_error("failed to create asm parser");
     return nullptr;
   }
 
   parser->setTargetParser(*tap);
 
   if (parser->Run(/*NoInitialTextSection=*/false, /*NoFinalize=*/false)) {
-    prog->set_error(prog->combine_with_session_error("assembly parse/emit failed"));
+    errs->set_error(errs->combine_with_session_error("assembly parse/emit failed"));
     return nullptr;
   }
 
   return MemoryBuffer::getMemBufferCopy(
-      StringRef(obj_bytes.data(), obj_bytes.size()), "<a86-jit-object>");
-}
-
-static std::unique_ptr<a86_program> make_program_session(a86_jit *owner) {
-  auto prog = std::make_unique<a86_program>();
-
-  auto jtmb_or_err = orc::JITTargetMachineBuilder::detectHost();
-  if (!jtmb_or_err) {
-    owner->set_error(toString(jtmb_or_err.takeError()));
-    return nullptr;
-  }
-
-  auto dl_or_err = jtmb_or_err->getDefaultDataLayoutForTarget();
-  if (!dl_or_err) {
-    owner->set_error(toString(dl_or_err.takeError()));
-    return nullptr;
-  }
-
-  auto lljit_or_err =
-      orc::LLJITBuilder()
-          .setJITTargetMachineBuilder(std::move(*jtmb_or_err))
-          .setDataLayout(*dl_or_err)
-          .create();
-
-  if (!lljit_or_err) {
-    owner->set_error(toString(lljit_or_err.takeError()));
-    return nullptr;
-  }
-
-  prog->jit = std::move(*lljit_or_err);
-
-  prog->jit->getExecutionSession().setErrorReporter(
-      [raw = prog.get()](Error err) { raw->record_session_error(std::move(err)); });
-
-  auto support_jd_or_err = prog->jit->createJITDylib("a86_support");
-  if (!support_jd_or_err) {
-    owner->set_error(toString(support_jd_or_err.takeError()));
-    return nullptr;
-  }
-  prog->support_jd = &*support_jd_or_err;
-
-  auto gen_or_err = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-      prog->jit->getDataLayout().getGlobalPrefix());
-  if (!gen_or_err) {
-    owner->set_error(toString(gen_or_err.takeError()));
-    return nullptr;
-  }
-  prog->support_jd->addGenerator(std::move(*gen_or_err));
-
-  auto program_jd_or_err = prog->jit->createJITDylib("a86_program");
-  if (!program_jd_or_err) {
-    owner->set_error(toString(program_jd_or_err.takeError()));
-    return nullptr;
-  }
-  prog->program_jd = &*program_jd_or_err;
-  prog->program_jd->addToLinkOrder(*prog->support_jd);
-  prog->tracker = prog->program_jd->createResourceTracker();
-
-  return prog;
-}
-
-static bool set_owner_error(a86_jit *owner, a86_program *prog, std::string msg) {
-  if (prog) {
-    owner->set_error(prog->combine_with_session_error(std::move(msg)));
-  } else {
-    owner->set_error(std::move(msg));
-  }
-  return false;
+      StringRef(obj_bytes.data(), obj_bytes.size()), "");
 }
 
 }  // namespace
 
+struct a86_jit {
+  std::unique_ptr<orc::LLJIT> jit;
+  orc::JITDylib *support_jd = nullptr;
+  std::shared_ptr<shared_error_state> errs = std::make_shared<shared_error_state>();
+
+  void clear_error() { errs->clear_error_only(); }
+  void clear_session_error() { errs->clear_session_error_only(); }
+  void set_error(std::string msg) { errs->set_error(std::move(msg)); }
+
+  const char *error_cstr() const {
+    std::lock_guard<std::mutex> lock(errs->mu);
+    return errs->error_cstr_unsafe();
+  }
+
+  std::string combine_with_session_error(std::string high_level) const {
+    return errs->combine_with_session_error(std::move(high_level));
+  }
+};
+
+struct a86_program {
+  a86_jit *parent = nullptr;
+  std::string assembled_object_bytes;
+  std::vector<std::string> object_files;
+  std::vector<extern_binding_copy> externs;
+};
+
 extern "C" {
 
 a86_jit_t *a86_jit_create(void) {
-  static std::once_flag llvm_init_once;
-  std::call_once(llvm_init_once, [] {
+  auto jit = std::make_unique<a86_jit>();
+
+  static std::once_flag llvm_initialized;
+  std::call_once(llvm_initialized, [] {
     InitializeNativeTarget();
     InitializeNativeTargetAsmParser();
     InitializeNativeTargetAsmPrinter();
   });
 
-  return new a86_jit();
+  auto jtmb_or_err = orc::JITTargetMachineBuilder::detectHost();
+  if (!jtmb_or_err) {
+    jit->set_error(toString(jtmb_or_err.takeError()));
+    return nullptr;
+  }
+
+  auto dl_or_err = jtmb_or_err->getDefaultDataLayoutForTarget();
+  if (!dl_or_err) {
+    jit->set_error(toString(dl_or_err.takeError()));
+    return nullptr;
+  }
+
+  auto lljit_or_err = orc::LLJITBuilder()
+                          .setJITTargetMachineBuilder(std::move(*jtmb_or_err))
+                          .setDataLayout(*dl_or_err)
+                          .create();
+  if (!lljit_or_err) {
+    jit->set_error(toString(lljit_or_err.takeError()));
+    return nullptr;
+  }
+
+  jit->jit = std::move(*lljit_or_err);
+
+  {
+    auto errs = jit->errs;
+    jit->jit->getExecutionSession().setErrorReporter(
+        [errs](Error err) {
+          errs->record_session_error(std::move(err));
+        });
+  }
+
+  auto support_jd_or_err = jit->jit->createJITDylib("a86_support");
+  if (!support_jd_or_err) {
+    jit->set_error(toString(support_jd_or_err.takeError()));
+    return nullptr;
+  }
+
+  jit->support_jd = &*support_jd_or_err;
+
+  auto gen_or_err = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+      jit->jit->getDataLayout().getGlobalPrefix());
+  if (!gen_or_err) {
+    jit->set_error(toString(gen_or_err.takeError()));
+    return nullptr;
+  }
+
+  jit->support_jd->addGenerator(std::move(*gen_or_err));
+  return jit.release();
 }
 
 void a86_jit_destroy(a86_jit_t *jit) {
@@ -298,11 +306,12 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
                             int object_file_count,
                             const a86_extern_binding_t *externs,
                             int extern_count) {
-  if (!jit) {
+  if (!jit || !jit->jit || !jit->support_jd) {
     return nullptr;
   }
 
   jit->clear_error();
+  jit->clear_session_error();
 
   if (!asm_text) {
     jit->set_error("asm_text is null");
@@ -325,71 +334,34 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     return nullptr;
   }
 
-  auto prog = make_program_session(jit);
-  if (!prog) {
-    return nullptr;
-  }
-
-  prog->clear_error();
-  prog->clear_session_error();
-
-  orc::SymbolMap symbol_map;
-  for (int i = 0; i < extern_count; ++i) {
-    const auto &b = externs[i];
-    if (!b.name) {
-      set_owner_error(jit, prog.get(), "extern binding has null name");
-      return nullptr;
-    }
-
-    auto sym_name = prog->jit->mangleAndIntern(b.name);
-    auto addr = orc::ExecutorAddr::fromPtr(b.value);
-    symbol_map[sym_name] =
-        orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
-  }
-
-  if (!symbol_map.empty()) {
-    if (auto err = prog->program_jd->define(
-            orc::absoluteSymbols(std::move(symbol_map)), prog->tracker)) {
-      set_owner_error(jit, prog.get(), toString(std::move(err)));
-      return nullptr;
-    }
-  }
+  auto prog = std::make_unique<a86_program>();
+  prog->parent = jit;
 
   for (int i = 0; i < object_file_count; ++i) {
     if (!object_files[i]) {
-      set_owner_error(jit, prog.get(), "object file path is null");
+      jit->set_error("object file path is null");
       return nullptr;
     }
-
-    auto mb_or_err = MemoryBuffer::getFile(object_files[i]);
-    if (!mb_or_err) {
-      set_owner_error(jit, prog.get(),
-                      "failed to read object file " +
-                          std::string(object_files[i]) + ": " +
-                          mb_or_err.getError().message());
-      return nullptr;
-    }
-
-    if (auto err = prog->jit->addObjectFile(prog->tracker, std::move(*mb_or_err))) {
-      set_owner_error(jit, prog.get(),
-                      "failed to add object file " +
-                          std::string(object_files[i]) + ": " +
-                          toString(std::move(err)));
-      return nullptr;
-    }
+    prog->object_files.emplace_back(object_files[i]);
   }
 
-  auto obj = assemble_to_object(prog.get(), asm_text);
+  for (int i = 0; i < extern_count; ++i) {
+    if (!externs[i].name) {
+      jit->set_error("extern binding has null name");
+      return nullptr;
+    }
+    prog->externs.push_back(extern_binding_copy{
+        std::string(externs[i].name),
+        externs[i].kind,
+        externs[i].value});
+  }
+
+  auto obj = assemble_to_object(jit->errs.get(), asm_text);
   if (!obj) {
-    jit->set_error(prog->error_cstr() ? prog->error_cstr() : "assembly failed");
     return nullptr;
   }
 
-  if (auto err = prog->jit->addObjectFile(prog->tracker, std::move(obj))) {
-    set_owner_error(jit, prog.get(), toString(std::move(err)));
-    return nullptr;
-  }
-
+  prog->assembled_object_bytes.assign(obj->getBufferStart(), obj->getBufferEnd());
   return prog.release();
 }
 
@@ -406,94 +378,173 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   result.value = 0;
   result.error_message = nullptr;
 
-  if (!program || !program->jit) {
+  if (!program || !program->parent || !program->parent->jit ||
+      !program->parent->support_jd) {
     result.error_message = "invalid program handle";
     return result;
   }
 
+  auto *jit = program->parent;
+  jit->clear_error();
+  jit->clear_session_error();
+
   if (!label) {
-    result.error_message = "label is null";
+    jit->set_error("label is null");
+    result.error_message = jit->error_cstr();
     return result;
   }
-
   if (argc < 0) {
-    result.error_message = "argc is negative";
+    jit->set_error("argc is negative");
+    result.error_message = jit->error_cstr();
     return result;
   }
-
   if (argc > 0 && !argv) {
-    result.error_message = "argv is null but argc > 0";
+    jit->set_error("argv is null but argc > 0");
+    result.error_message = jit->error_cstr();
     return result;
   }
 
-  orc::ExecutorAddr entry_addr;
+  std::string jd_name = "a86_call_" + std::to_string(NextCallId++);
+  auto jd_or_err = jit->jit->createJITDylib(jd_name);
+  if (!jd_or_err) {
+    jit->set_error(toString(jd_or_err.takeError()));
+    result.error_message = jit->error_cstr();
+    return result;
+  }
 
-  {
-    std::lock_guard<std::mutex> lock(program->mu);
+  orc::JITDylib *call_jd = &*jd_or_err;
+  auto tracker = call_jd->createResourceTracker();
+  call_jd->addToLinkOrder(*jit->support_jd);
 
-    program->clear_error();
-    program->clear_session_error();
+  auto cleanup = [&]() {
+    if (tracker) {
+      consumeError(tracker->remove());
+      tracker.reset();
+    }
+  };
 
-    auto sym_or_err = program->jit->lookup(*program->program_jd, label);
-    if (!sym_or_err) {
-      std::string high =
-          "lookup of label '" + std::string(label) +
-          "' failed: " + toString(sym_or_err.takeError());
-      program->set_error(program->combine_with_session_error(std::move(high)));
-      result.error_message = program->error_cstr();
+  // 1. Install host-provided externs into this call's tracker.
+  orc::SymbolMap symbol_map;
+  for (const auto &b : program->externs) {
+    auto sym_name = jit->jit->mangleAndIntern(b.name);
+    orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(b.value);
+    symbol_map[sym_name] = orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
+  }
+
+  if (!symbol_map.empty()) {
+    if (auto err = call_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
+                                   tracker)) {
+      jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
+      result.error_message = jit->error_cstr();
+      cleanup();
+      return result;
+    }
+  }
+
+  // 2. Add linked object files.
+  for (const auto &path : program->object_files) {
+    auto mb_or_err = MemoryBuffer::getFile(path);
+    if (!mb_or_err) {
+      jit->set_error(
+          "failed to read object file " + path + ": " +
+          mb_or_err.getError().message());
+      result.error_message = jit->error_cstr();
+      cleanup();
       return result;
     }
 
-    entry_addr = *sym_or_err;
+    if (auto err = jit->jit->addObjectFile(tracker, std::move(*mb_or_err))) {
+      jit->set_error(
+          jit->combine_with_session_error(
+              "failed to add object file " + path + ": " +
+              toString(std::move(err))));
+      result.error_message = jit->error_cstr();
+      cleanup();
+      return result;
+    }
+  }
+
+  // 3. Add the preassembled a86 program object.
+  auto obj = MemoryBuffer::getMemBufferCopy(
+      StringRef(program->assembled_object_bytes.data(),
+                program->assembled_object_bytes.size()),
+      "a86_program.o");
+
+  if (auto err = jit->jit->addObjectFile(tracker, std::move(obj))) {
+    jit->set_error(
+        jit->combine_with_session_error(toString(std::move(err))));
+    result.error_message = jit->error_cstr();
+    cleanup();
+    return result;
+  }
+
+  // 4. Lookup and call within the fresh per-call program dylib.
+  auto sym_or_err = jit->jit->lookup(*call_jd, label);
+  if (!sym_or_err) {
+    std::string high =
+        "lookup of label '" + std::string(label) + "' failed: " +
+        toString(sym_or_err.takeError());
+    jit->set_error(jit->combine_with_session_error(std::move(high)));
+    result.error_message = jit->error_cstr();
+    cleanup();
+    return result;
   }
 
   uint64_t value = 0;
   switch (argc) {
     case 0: {
-      auto *fn = entry_addr.toPtr<uint64_t (*)()>();
+      using Fn = uint64_t (*)();
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn();
       break;
     }
     case 1: {
-      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t)>();
+      using Fn = uint64_t (*)(uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0]);
       break;
     }
     case 2: {
-      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t)>();
+      using Fn = uint64_t (*)(uint64_t, uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0], argv[1]);
       break;
     }
     case 3: {
-      auto *fn =
-          entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t)>();
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0], argv[1], argv[2]);
       break;
     }
     case 4: {
-      auto *fn =
-          entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t)>();
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0], argv[1], argv[2], argv[3]);
       break;
     }
     case 5: {
-      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
-                                               uint64_t, uint64_t)>();
+      using Fn =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4]);
       break;
     }
     case 6: {
-      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
-                                               uint64_t, uint64_t, uint64_t)>();
+      using Fn =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t);
+      auto *fn = sym_or_err->toPtr<Fn>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
       break;
     }
     default:
-      result.error_message =
-          "a86_program_call currently supports at most 6 arguments";
+      jit->set_error("a86_program_call currently supports at most 6 arguments");
+      result.error_message = jit->error_cstr();
+      cleanup();
       return result;
   }
 
+  cleanup();
   result.ok = 1;
   result.value = value;
   result.error_message = nullptr;
