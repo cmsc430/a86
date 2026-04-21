@@ -457,7 +457,7 @@ a86_call_result_t a86_program_call(a86_program_t *program,
       result.error_message = jit->error_cstr();
       return result;
     }
-    auto entry_addr = *sym_or_err;
+    entry_addr = *sym_or_err;
   }
 
   uint64_t value = 0;
