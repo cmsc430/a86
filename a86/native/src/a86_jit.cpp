@@ -394,17 +394,6 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
 }
 
 void a86_program_unload(a86_program_t *program) {
-  if (!program) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(program->mu);
-
-  if (program->tracker) {
-    consumeError(program->tracker->remove());
-    program->tracker.reset();
-  }
-
   delete program;
 }
 
