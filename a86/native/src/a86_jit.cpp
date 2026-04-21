@@ -259,7 +259,6 @@ a86_jit_t *a86_jit_create(void) {
 
 void a86_jit_destroy(a86_jit_t *jit) {
   if (!jit) return;
-  std::lock_guard<std::mutex> lock(jit->mu);
   delete jit;
 }
 
@@ -423,7 +422,7 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   }
 
   auto *jit = program->parent;
-  std::lock_guard<std::mutex> lock(jit->mu);
+
   jit->clear_error();
   jit->clear_session_error();
 
@@ -445,54 +444,59 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     return result;
   }
 
-  auto sym_or_err = jit->jit->lookup(*program->jd, label);
-  if (!sym_or_err) {
-    std::string high =
-	"lookup of label '" + std::string(label) +
-	"' failed: " + toString(sym_or_err.takeError());
-    jit->set_error(jit->combine_with_session_error(std::move(high)));
-    result.error_message = jit->error_cstr();
-    return result;
+  orc::ExecutorAddr entry_addr;
+  {
+    std::lock_guard<std::mutex> lock(jit->mu);
+
+    auto sym_or_err = jit->jit->lookup(*program->jd, label);
+    if (!sym_or_err) {
+      std::string high =
+          "lookup of label '" + std::string(label) +
+          "' failed: " + toString(sym_or_err.takeError());
+      jit->set_error(jit->combine_with_session_error(std::move(high)));
+      result.error_message = jit->error_cstr();
+      return result;
+    }
+    auto entry_addr = *sym_or_err;
   }
 
   uint64_t value = 0;
 
   switch (argc) {
     case 0: {
-      auto *fn = sym_or_err->toPtr<uint64_t (*)()>();
+      auto *fn = entry_addr.toPtr<uint64_t (*)()>();
       value = fn();
       break;
     }
     case 1: {
-      auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t)>();
+      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t)>();
       value = fn(argv[0]);
       break;
     }
     case 2: {
-      auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t)>();
+      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1]);
       break;
     }
     case 3: {
       auto *fn =
-	  sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t)>();
+	  entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2]);
       break;
     }
     case 4: {
-      auto *fn = sym_or_err
-		     ->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t)>();
+      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3]);
       break;
     }
     case 5: {
-      auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
+      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
 						uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4]);
       break;
     }
     case 6: {
-      auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
+      auto *fn = entry_addr.toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
 						uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
       break;
