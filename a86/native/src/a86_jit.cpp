@@ -41,7 +41,7 @@ using namespace llvm;
 
 namespace {
 
-std::atomic<uint64_t> NextCallId{0};
+std::atomic<uint64_t> NextLoadId{0};
 
 struct shared_error_state {
   mutable std::mutex mu;
@@ -222,9 +222,8 @@ struct a86_jit {
 
 struct a86_program {
   a86_jit *parent = nullptr;
-  std::string assembled_object_bytes;
-  std::vector<std::string> object_files;
-  std::vector<extern_binding_copy> externs;
+  orc::JITDylib *program_jd = nullptr;
+  orc::ResourceTrackerSP tracker;
 };
 
 extern "C" {
@@ -334,39 +333,96 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     return nullptr;
   }
 
-  auto prog = std::make_unique<a86_program>();
-  prog->parent = jit;
-
-  for (int i = 0; i < object_file_count; ++i) {
-    if (!object_files[i]) {
-      jit->set_error("object file path is null");
-      return nullptr;
-    }
-    prog->object_files.emplace_back(object_files[i]);
-  }
-
-  for (int i = 0; i < extern_count; ++i) {
-    if (!externs[i].name) {
-      jit->set_error("extern binding has null name");
-      return nullptr;
-    }
-    prog->externs.push_back(extern_binding_copy{
-        std::string(externs[i].name),
-        externs[i].kind,
-        externs[i].value});
-  }
-
   auto obj = assemble_to_object(jit->errs.get(), asm_text);
   if (!obj) {
     return nullptr;
   }
 
-  prog->assembled_object_bytes.assign(obj->getBufferStart(), obj->getBufferEnd());
+  std::string jd_name = "a86_prog_" + std::to_string(NextLoadId++);
+  auto jd_or_err = jit->jit->createJITDylib(jd_name);
+  if (!jd_or_err) {
+    jit->set_error(toString(jd_or_err.takeError()));
+    return nullptr;
+  }
+
+  orc::JITDylib *program_jd = &*jd_or_err;
+  auto tracker = program_jd->createResourceTracker();
+  program_jd->addToLinkOrder(*jit->support_jd);
+
+  auto cleanup = [&]() {
+    if (tracker) {
+      consumeError(tracker->remove());
+      tracker.reset();
+    }
+  };
+
+  // Install host-provided externs as absolute symbols.
+  orc::SymbolMap symbol_map;
+  for (int i = 0; i < extern_count; ++i) {
+    if (!externs[i].name) {
+      jit->set_error("extern binding has null name");
+      cleanup();
+      return nullptr;
+    }
+    auto sym_name = jit->jit->mangleAndIntern(externs[i].name);
+    orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(externs[i].value);
+    symbol_map[sym_name] = orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
+  }
+
+  if (!symbol_map.empty()) {
+    if (auto err = program_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
+                                      tracker)) {
+      jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
+      cleanup();
+      return nullptr;
+    }
+  }
+
+  // Add linked object files.
+  for (int i = 0; i < object_file_count; ++i) {
+    if (!object_files[i]) {
+      jit->set_error("object file path is null");
+      cleanup();
+      return nullptr;
+    }
+    auto mb_or_err = MemoryBuffer::getFile(object_files[i]);
+    if (!mb_or_err) {
+      jit->set_error(
+          std::string("failed to read object file ") + object_files[i] + ": " +
+          mb_or_err.getError().message());
+      cleanup();
+      return nullptr;
+    }
+    if (auto err = jit->jit->addObjectFile(tracker, std::move(*mb_or_err))) {
+      jit->set_error(
+          jit->combine_with_session_error(
+              std::string("failed to add object file ") + object_files[i] + ": " +
+              toString(std::move(err))));
+      cleanup();
+      return nullptr;
+    }
+  }
+
+  // Add the assembled a86 program object.
+  if (auto err = jit->jit->addObjectFile(tracker, std::move(obj))) {
+    jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
+    cleanup();
+    return nullptr;
+  }
+
+  auto prog = std::make_unique<a86_program>();
+  prog->parent = jit;
+  prog->program_jd = program_jd;
+  prog->tracker = std::move(tracker);
   return prog.release();
 }
 
 void a86_program_unload(a86_program_t *program) {
-  delete program;
+  if (program) {
+    if (program->tracker)
+      consumeError(program->tracker->remove());
+    delete program;
+  }
 }
 
 a86_call_result_t a86_program_call(a86_program_t *program,
@@ -379,7 +435,7 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   result.error_message = nullptr;
 
   if (!program || !program->parent || !program->parent->jit ||
-      !program->parent->support_jd) {
+      !program->program_jd) {
     result.error_message = "invalid program handle";
     return result;
   }
@@ -404,89 +460,13 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     return result;
   }
 
-  std::string jd_name = "a86_call_" + std::to_string(NextCallId++);
-  auto jd_or_err = jit->jit->createJITDylib(jd_name);
-  if (!jd_or_err) {
-    jit->set_error(toString(jd_or_err.takeError()));
-    result.error_message = jit->error_cstr();
-    return result;
-  }
-
-  orc::JITDylib *call_jd = &*jd_or_err;
-  auto tracker = call_jd->createResourceTracker();
-  call_jd->addToLinkOrder(*jit->support_jd);
-
-  auto cleanup = [&]() {
-    if (tracker) {
-      consumeError(tracker->remove());
-      tracker.reset();
-    }
-  };
-
-  // 1. Install host-provided externs into this call's tracker.
-  orc::SymbolMap symbol_map;
-  for (const auto &b : program->externs) {
-    auto sym_name = jit->jit->mangleAndIntern(b.name);
-    orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(b.value);
-    symbol_map[sym_name] = orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
-  }
-
-  if (!symbol_map.empty()) {
-    if (auto err = call_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
-                                   tracker)) {
-      jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
-      result.error_message = jit->error_cstr();
-      cleanup();
-      return result;
-    }
-  }
-
-  // 2. Add linked object files.
-  for (const auto &path : program->object_files) {
-    auto mb_or_err = MemoryBuffer::getFile(path);
-    if (!mb_or_err) {
-      jit->set_error(
-          "failed to read object file " + path + ": " +
-          mb_or_err.getError().message());
-      result.error_message = jit->error_cstr();
-      cleanup();
-      return result;
-    }
-
-    if (auto err = jit->jit->addObjectFile(tracker, std::move(*mb_or_err))) {
-      jit->set_error(
-          jit->combine_with_session_error(
-              "failed to add object file " + path + ": " +
-              toString(std::move(err))));
-      result.error_message = jit->error_cstr();
-      cleanup();
-      return result;
-    }
-  }
-
-  // 3. Add the preassembled a86 program object.
-  auto obj = MemoryBuffer::getMemBufferCopy(
-      StringRef(program->assembled_object_bytes.data(),
-                program->assembled_object_bytes.size()),
-      "a86_program.o");
-
-  if (auto err = jit->jit->addObjectFile(tracker, std::move(obj))) {
-    jit->set_error(
-        jit->combine_with_session_error(toString(std::move(err))));
-    result.error_message = jit->error_cstr();
-    cleanup();
-    return result;
-  }
-
-  // 4. Lookup and call within the fresh per-call program dylib.
-  auto sym_or_err = jit->jit->lookup(*call_jd, label);
+  auto sym_or_err = jit->jit->lookup(*program->program_jd, label);
   if (!sym_or_err) {
     std::string high =
         "lookup of label '" + std::string(label) + "' failed: " +
         toString(sym_or_err.takeError());
     jit->set_error(jit->combine_with_session_error(std::move(high)));
     result.error_message = jit->error_cstr();
-    cleanup();
     return result;
   }
 
@@ -540,11 +520,9 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     default:
       jit->set_error("a86_program_call currently supports at most 6 arguments");
       result.error_message = jit->error_cstr();
-      cleanup();
       return result;
   }
 
-  cleanup();
   result.ok = 1;
   result.value = value;
   result.error_message = nullptr;
