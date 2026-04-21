@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <mutex>
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
@@ -41,6 +42,7 @@ struct a86_jit {
   orc::JITDylib *support_jd = nullptr;
   std::string last_error;
   std::string last_session_error;
+  std::mutex mu;
 
   void clear_error() { last_error.clear(); }
 
@@ -256,6 +258,8 @@ a86_jit_t *a86_jit_create(void) {
 }
 
 void a86_jit_destroy(a86_jit_t *jit) {
+  if (!jit) return;
+  std::lock_guard<std::mutex> lock(jit->mu);
   delete jit;
 }
 
@@ -275,7 +279,8 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   if (!jit || !jit->jit || !jit->support_jd) {
     return nullptr;
   }
-
+  std::lock_guard<std::mutex> lock(jit->mu);
+  
   jit->clear_error();
   jit->clear_session_error();
 
@@ -392,12 +397,14 @@ void a86_program_unload(a86_program_t *program) {
   if (!program) {
     return;
   }
-
-  if (program->tracker) {
-    consumeError(program->tracker->remove());
-    program->tracker.reset();
+  auto *jit = program->parent;
+  if (jit) {
+    std::lock_guard<std::mutex> lock(jit->mu);
+    if (program->tracker) {
+      consumeError(program->tracker->remove());
+      program->tracker.reset();
+    }
   }
-
   delete program;
 }
 
@@ -416,6 +423,7 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   }
 
   auto *jit = program->parent;
+  std::lock_guard<std::mutex> lock(jit->mu);
   jit->clear_error();
   jit->clear_session_error();
 
