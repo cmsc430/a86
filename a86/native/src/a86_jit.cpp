@@ -38,6 +38,7 @@ using namespace llvm;
 
 struct a86_jit {
   std::unique_ptr<orc::LLJIT> jit;
+  orc::JITDylib *support_jd = nullptr;
   std::string last_error;
   std::string last_session_error;
 
@@ -98,9 +99,9 @@ assemble_to_object(a86_jit *jit, StringRef asm_text) {
 
   MCTargetOptions mc_opts;
 
-  auto mri = std::unique_ptr<MCRegisterInfo>(target->createMCRegInfo(TT));
+  auto mri = std::unique_ptr<MCRegisterInfo>(target->createMCRegInfo(triple_name));
   auto mai =
-      std::unique_ptr<MCAsmInfo>(target->createMCAsmInfo(*mri, TT, mc_opts));
+      std::unique_ptr<MCAsmInfo>(target->createMCAsmInfo(*mri, triple_name, mc_opts));
   auto mii = std::unique_ptr<MCInstrInfo>(target->createMCInstrInfo());
 
   std::string cpu = sys::getHostCPUName().str();
@@ -113,7 +114,7 @@ assemble_to_object(a86_jit *jit, StringRef asm_text) {
   std::string feature_string = features.getString();
 
   auto sti = std::unique_ptr<MCSubtargetInfo>(
-      target->createMCSubtargetInfo(TT, cpu, feature_string));
+      target->createMCSubtargetInfo(triple_name, cpu, feature_string));
 
   if (!mri || !mai || !mii || !sti) {
     jit->set_error("failed to create MC target components");
@@ -147,7 +148,7 @@ assemble_to_object(a86_jit *jit, StringRef asm_text) {
 
   auto streamer = std::unique_ptr<MCStreamer>(
       target->createMCObjectStreamer(
-          TT, ctx, std::move(mab), std::move(obj_writer), std::move(mce), *sti));
+	  TT, ctx, std::move(mab), std::move(obj_writer), std::move(mce), *sti));
 
   if (!streamer) {
     jit->set_error("failed to create object streamer");
@@ -180,8 +181,8 @@ assemble_to_object(a86_jit *jit, StringRef asm_text) {
 
 static bool
 set_jit_error_and_cleanup(a86_jit *jit,
-                          a86_program *prog,
-                          std::string high_level_error) {
+			  a86_program *prog,
+			  std::string high_level_error) {
   jit->set_error(jit->combine_with_session_error(std::move(high_level_error)));
   if (prog && prog->tracker) {
     consumeError(prog->tracker->remove());
@@ -218,9 +219,9 @@ a86_jit_t *a86_jit_create(void) {
   }
 
   auto lljit_or_err = orc::LLJITBuilder()
-                          .setJITTargetMachineBuilder(std::move(*jtmb_or_err))
-                          .setDataLayout(*dl_or_err)
-                          .create();
+			  .setJITTargetMachineBuilder(std::move(*jtmb_or_err))
+			  .setDataLayout(*dl_or_err)
+			  .create();
   if (!lljit_or_err) {
     jit->set_error(toString(lljit_or_err.takeError()));
     return nullptr;
@@ -232,19 +233,24 @@ a86_jit_t *a86_jit_create(void) {
   // to stderr.
   jit->jit->getExecutionSession().setErrorReporter(
       [raw = jit.get()](Error err) {
-        raw->record_session_error(std::move(err));
+	raw->record_session_error(std::move(err));
       });
 
-  // Let the main JITDylib resolve symbols from the current process. Programs
-  // will also get their own generator when loaded.
-  auto gen_or_err =
-      orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-          jit->jit->getDataLayout().getGlobalPrefix());
+  // Create one long-lived support namespace for current-process symbol lookup.
+  auto support_jd_or_err = jit->jit->createJITDylib("a86_support");
+  if (!support_jd_or_err) {
+    jit->set_error(toString(support_jd_or_err.takeError()));
+    return nullptr;
+  }
+  jit->support_jd = &*support_jd_or_err;
+
+  auto gen_or_err = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+      jit->jit->getDataLayout().getGlobalPrefix());
   if (!gen_or_err) {
     jit->set_error(toString(gen_or_err.takeError()));
     return nullptr;
   }
-  jit->jit->getMainJITDylib().addGenerator(std::move(*gen_or_err));
+  jit->support_jd->addGenerator(std::move(*gen_or_err));
 
   return jit.release();
 }
@@ -261,12 +267,12 @@ const char *a86_jit_last_error(a86_jit_t *jit) {
 }
 
 a86_program_t *a86_jit_load(a86_jit_t *jit,
-                            const char *asm_text,
-                            const char *const *object_files,
-                            int object_file_count,
-                            const a86_extern_binding_t *externs,
-                            int extern_count) {
-  if (!jit || !jit->jit) {
+			    const char *asm_text,
+			    const char *const *object_files,
+			    int object_file_count,
+			    const a86_extern_binding_t *externs,
+			    int extern_count) {
+  if (!jit || !jit->jit || !jit->support_jd) {
     return nullptr;
   }
 
@@ -307,16 +313,8 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   prog->jd = &*jd_or_err;
   prog->tracker = prog->jd->createResourceTracker();
 
-  // Let this program's namespace resolve libc / current-process symbols too.
-  auto gen_or_err =
-      orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-          jit->jit->getDataLayout().getGlobalPrefix());
-  if (!gen_or_err) {
-    jit->set_error(toString(gen_or_err.takeError()));
-    consumeError(prog->tracker->remove());
-    return nullptr;
-  }
-  prog->jd->addGenerator(std::move(*gen_or_err));
+  // Resolve process/libc symbols through the shared support namespace.
+  prog->jd->addToLinkOrder(*jit->support_jd);
 
   // 1. Install host-provided externs into this program's tracker.
   orc::SymbolMap symbol_map;
@@ -324,8 +322,8 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     const auto &b = externs[i];
     if (!b.name) {
       return set_jit_error_and_cleanup(
-                 jit, prog.get(), "extern binding has null name"),
-             nullptr;
+		 jit, prog.get(), "extern binding has null name"),
+	     nullptr;
     }
 
     auto sym_name = jit->jit->mangleAndIntern(b.name);
@@ -334,16 +332,16 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     // symbol. For GLOBAL, that address should point to storage.
     orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(b.value);
     symbol_map[sym_name] =
-        orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
+	orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
   }
 
   if (!symbol_map.empty()) {
     if (auto err =
-            prog->jd->define(orc::absoluteSymbols(std::move(symbol_map)),
-                             prog->tracker)) {
+	    prog->jd->define(orc::absoluteSymbols(std::move(symbol_map)),
+			     prog->tracker)) {
       return set_jit_error_and_cleanup(
-                 jit, prog.get(), toString(std::move(err))),
-             nullptr;
+		 jit, prog.get(), toString(std::move(err))),
+	     nullptr;
     }
   }
 
@@ -351,26 +349,26 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   for (int i = 0; i < object_file_count; ++i) {
     if (!object_files[i]) {
       return set_jit_error_and_cleanup(
-                 jit, prog.get(), "object file path is null"),
-             nullptr;
+		 jit, prog.get(), "object file path is null"),
+	     nullptr;
     }
 
     auto mb_or_err = MemoryBuffer::getFile(object_files[i]);
     if (!mb_or_err) {
       return set_jit_error_and_cleanup(
-                 jit, prog.get(),
-                 "failed to read object file " + std::string(object_files[i]) +
-                     ": " + mb_or_err.getError().message()),
-             nullptr;
+		 jit, prog.get(),
+		 "failed to read object file " + std::string(object_files[i]) +
+		     ": " + mb_or_err.getError().message()),
+	     nullptr;
     }
 
     if (auto err =
-            jit->jit->addObjectFile(prog->tracker, std::move(*mb_or_err))) {
+	    jit->jit->addObjectFile(prog->tracker, std::move(*mb_or_err))) {
       return set_jit_error_and_cleanup(
-                 jit, prog.get(),
-                 "failed to add object file " + std::string(object_files[i]) +
-                     ": " + toString(std::move(err))),
-             nullptr;
+		 jit, prog.get(),
+		 "failed to add object file " + std::string(object_files[i]) +
+		     ": " + toString(std::move(err))),
+	     nullptr;
     }
   }
 
@@ -383,8 +381,8 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
 
   if (auto err = jit->jit->addObjectFile(prog->tracker, std::move(obj))) {
     return set_jit_error_and_cleanup(
-               jit, prog.get(), toString(std::move(err))),
-           nullptr;
+	       jit, prog.get(), toString(std::move(err))),
+	   nullptr;
   }
 
   return prog.release();
@@ -404,9 +402,9 @@ void a86_program_unload(a86_program_t *program) {
 }
 
 a86_call_result_t a86_program_call(a86_program_t *program,
-                                   const char *label,
-                                   const uint64_t *argv,
-                                   int argc) {
+				   const char *label,
+				   const uint64_t *argv,
+				   int argc) {
   a86_call_result_t result{};
   result.ok = 0;
   result.value = 0;
@@ -442,8 +440,8 @@ a86_call_result_t a86_program_call(a86_program_t *program,
   auto sym_or_err = jit->jit->lookup(*program->jd, label);
   if (!sym_or_err) {
     std::string high =
-        "lookup of label '" + std::string(label) +
-        "' failed: " + toString(sym_or_err.takeError());
+	"lookup of label '" + std::string(label) +
+	"' failed: " + toString(sym_or_err.takeError());
     jit->set_error(jit->combine_with_session_error(std::move(high)));
     result.error_message = jit->error_cstr();
     return result;
@@ -469,25 +467,25 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     }
     case 3: {
       auto *fn =
-          sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t)>();
+	  sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2]);
       break;
     }
     case 4: {
       auto *fn = sym_or_err
-                     ->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t)>();
+		     ->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3]);
       break;
     }
     case 5: {
       auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
-                                                uint64_t, uint64_t)>();
+						uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4]);
       break;
     }
     case 6: {
       auto *fn = sym_or_err->toPtr<uint64_t (*)(uint64_t, uint64_t, uint64_t,
-                                                uint64_t, uint64_t, uint64_t)>();
+						uint64_t, uint64_t, uint64_t)>();
       value = fn(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
       break;
     }
