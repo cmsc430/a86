@@ -251,9 +251,12 @@ struct a86_jit {
 struct a86_program {
   a86_jit *parent = nullptr;
   orc::JITDylib *program_jd = nullptr;
-  orc::ResourceTrackerSP tracker;
+  orc::JITDylib *extern_jd = nullptr;
+  orc::ResourceTrackerSP program_tracker;
+  orc::ResourceTrackerSP extern_tracker;
   uint64_t load_id = 0;
   std::string jd_name;
+  std::string extern_jd_name;
   std::vector<extern_binding_copy> externs;
 };
 
@@ -385,13 +388,28 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     return nullptr;
   }
   orc::JITDylib *program_jd = &*jd_or_err;
-  auto tracker = program_jd->createResourceTracker();
+  auto program_tracker = program_jd->createResourceTracker();
+  std::string extern_jd_name = jd_name + "_externs";
+  auto extern_jd_or_err = jit->jit->createJITDylib(extern_jd_name);
+  if (!extern_jd_or_err) {
+    jit->set_error(toString(extern_jd_or_err.takeError()));
+    consumeError(program_tracker->remove());
+    return nullptr;
+  }
+  orc::JITDylib *extern_jd = &*extern_jd_or_err;
+  auto extern_tracker = extern_jd->createResourceTracker();
+  extern_jd->addToLinkOrder(*jit->support_jd);
+  program_jd->addToLinkOrder(*extern_jd);
   program_jd->addToLinkOrder(*jit->support_jd);
 
   auto cleanup = [&]() {
-    if (tracker) {
-      consumeError(tracker->remove());
-      tracker.reset();
+    if (program_tracker) {
+      consumeError(program_tracker->remove());
+      program_tracker.reset();
+    }
+    if (extern_tracker) {
+      consumeError(extern_tracker->remove());
+      extern_tracker.reset();
     }
     // No pooling - JITDylib will be cleaned up when tracker removes all resources
   };
@@ -399,9 +417,12 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   auto prog = std::make_unique<a86_program>();
   prog->parent = jit;
   prog->program_jd = program_jd;
-  prog->tracker = tracker;
+  prog->extern_jd = extern_jd;
+  prog->program_tracker = program_tracker;
+  prog->extern_tracker = extern_tracker;
   prog->load_id = load_id;
   prog->jd_name = jd_name;
+  prog->extern_jd_name = extern_jd_name;
   prog->externs.reserve(extern_count);
 
   // Copy host-provided externs into program-owned storage before defining
@@ -419,9 +440,9 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   // Install host-provided externs as absolute symbols.
   orc::SymbolMap symbol_map;
   for (const auto &ext : prog->externs) {
-    native_trace("load id=%llu jd=%s define extern name=%s kind=%d addr=%p",
+    native_trace("load id=%llu extern-jd=%s define extern name=%s kind=%d addr=%p",
                  static_cast<unsigned long long>(load_id),
-                 jd_name.c_str(),
+                 extern_jd_name.c_str(),
                  ext.name.c_str(),
                  static_cast<int>(ext.kind),
                  ext.value);
@@ -431,12 +452,12 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   }
 
   if (!symbol_map.empty()) {
-    native_trace("load id=%llu jd=%s defining %zu absolute symbols",
+    native_trace("load id=%llu extern-jd=%s defining %zu absolute symbols",
                  static_cast<unsigned long long>(load_id),
-                 jd_name.c_str(),
+                 extern_jd_name.c_str(),
                  symbol_map.size());
-    if (auto err = program_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
-                                      tracker)) {
+    if (auto err = extern_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
+                                     extern_tracker)) {
       jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
       cleanup();
       return nullptr;
@@ -462,7 +483,7 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
       cleanup();
       return nullptr;
     }
-    if (auto err = jit->jit->addObjectFile(tracker, std::move(*mb_or_err))) {
+    if (auto err = jit->jit->addObjectFile(program_tracker, std::move(*mb_or_err))) {
       jit->set_error(
           jit->combine_with_session_error(
               std::string("failed to add object file ") + object_files[i] + ": " +
@@ -477,13 +498,14 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
                static_cast<unsigned long long>(load_id),
                jd_name.c_str(),
                obj->getBufferSize());
-  if (auto err = jit->jit->addObjectFile(tracker, std::move(obj))) {
+  if (auto err = jit->jit->addObjectFile(program_tracker, std::move(obj))) {
     jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
     cleanup();
     return nullptr;
   }
 
-  prog->tracker = std::move(tracker);
+  prog->program_tracker = std::move(program_tracker);
+  prog->extern_tracker = std::move(extern_tracker);
   native_trace("load id=%llu jd=%s complete",
                static_cast<unsigned long long>(load_id),
                prog->jd_name.c_str());
@@ -492,16 +514,22 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
 
 void a86_program_unload(a86_program_t *program) {
   if (program) {
-    native_trace("unload id=%llu jd=%s",
+    native_trace("unload id=%llu jd=%s extern-jd=%s",
                  static_cast<unsigned long long>(program->load_id),
-                 program->jd_name.c_str());
-    if (program->tracker && program->parent && program->parent->jit) {
-      // Remove all resources tracked to this program.
-      // This effectively empties the JITDylib and allows ORC to clean up.
-      consumeError(program->tracker->remove());
-      program->tracker.reset();
+                 program->jd_name.c_str(),
+                 program->extern_jd_name.c_str());
+    if (program->parent && program->parent->jit) {
+      if (program->program_tracker) {
+        consumeError(program->program_tracker->remove());
+        program->program_tracker.reset();
+      }
+      if (program->extern_tracker) {
+        consumeError(program->extern_tracker->remove());
+        program->extern_tracker.reset();
+      }
       // Do NOT return JITDylib to a pool - let ORC manage its lifecycle.
       program->program_jd = nullptr;
+      program->extern_jd = nullptr;
     }
     delete program;
   }
