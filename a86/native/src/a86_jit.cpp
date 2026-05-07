@@ -254,6 +254,7 @@ struct a86_program {
   orc::ResourceTrackerSP tracker;
   uint64_t load_id = 0;
   std::string jd_name;
+  std::vector<extern_binding_copy> externs;
 };
 
 extern "C" {
@@ -395,22 +396,37 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     // No pooling - JITDylib will be cleaned up when tracker removes all resources
   };
 
-  // Install host-provided externs as absolute symbols.
-  orc::SymbolMap symbol_map;
+  auto prog = std::make_unique<a86_program>();
+  prog->parent = jit;
+  prog->program_jd = program_jd;
+  prog->tracker = tracker;
+  prog->load_id = load_id;
+  prog->jd_name = jd_name;
+  prog->externs.reserve(extern_count);
+
+  // Copy host-provided externs into program-owned storage before defining
+  // symbols so their full payload remains stable for the program lifetime.
   for (int i = 0; i < extern_count; ++i) {
     if (!externs[i].name) {
       jit->set_error("extern binding has null name");
       cleanup();
       return nullptr;
     }
+    prog->externs.push_back(
+        extern_binding_copy{externs[i].name, externs[i].kind, externs[i].value});
+  }
+
+  // Install host-provided externs as absolute symbols.
+  orc::SymbolMap symbol_map;
+  for (const auto &ext : prog->externs) {
     native_trace("load id=%llu jd=%s define extern name=%s kind=%d addr=%p",
                  static_cast<unsigned long long>(load_id),
                  jd_name.c_str(),
-                 externs[i].name,
-                 static_cast<int>(externs[i].kind),
-                 externs[i].value);
-    auto sym_name = jit->jit->mangleAndIntern(externs[i].name);
-    orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(externs[i].value);
+                 ext.name.c_str(),
+                 static_cast<int>(ext.kind),
+                 ext.value);
+    auto sym_name = jit->jit->mangleAndIntern(ext.name);
+    orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(ext.value);
     symbol_map[sym_name] = orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
   }
 
@@ -467,12 +483,7 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     return nullptr;
   }
 
-  auto prog = std::make_unique<a86_program>();
-  prog->parent = jit;
-  prog->program_jd = program_jd;
   prog->tracker = std::move(tracker);
-  prog->load_id = load_id;
-  prog->jd_name = jd_name;
   native_trace("load id=%llu jd=%s complete",
                static_cast<unsigned long long>(load_id),
                prog->jd_name.c_str());
