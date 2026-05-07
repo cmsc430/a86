@@ -153,7 +153,6 @@
                   #:externs [externs (current-externs)]
                   #:objects [objs (current-objects)]
                   #:jit [jit (current-jit)])
-  (define _reset (reset-jit!)) ;; FIXME: heavy handed way to avoid problems with langs test suite failures
   (define asm-str (program->asm-string prog))
   (define-values (ext-vec keepalive) (prepare-externs externs))
   (define obj-vec (prepare-object-files objs))
