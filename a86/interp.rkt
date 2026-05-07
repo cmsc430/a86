@@ -186,11 +186,21 @@
     (λ () (f p))
     (λ () (asm-unload p))))
 
+(define (call-with-fresh-jit f)
+  ;; Keep `asm-interp` isolated from any long-lived ORC state.
+  (define jit (make-jit))
+  (dynamic-wind
+    void
+    (λ () (f jit))
+    (λ () (jit-close jit))))
 
 (define (asm-interp . asm)
   (define-values (init-label code) (asm-fixup asm))
-  (define p (asm-load code))
-  (asm-call p init-label))
+  (call-with-fresh-jit
+   (λ (jit)
+     (call-with-asm-loaded code
+                           (λ (p) (asm-call p init-label))
+                           #:jit jit))))
 
 (define (asm-interp/io . asm+in)
   (match asm+in
