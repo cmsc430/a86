@@ -1,0 +1,32 @@
+name: Test Prebuilt macOS Binary
+on: [push, workflow_dispatch]
+
+jobs:
+  test-prebuilt-macos:
+    runs-on: macos-13
+    name: macOS prebuilt / Racket 8.18
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Install Racket
+      uses: Bogdanp/setup-racket@v1.14
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        variant: 'CS'
+        version: '8.18'
+
+    - name: Install a86 package
+      run: |
+        raco pkg install --no-docs ../a86/
+
+    - name: Verify prebuilt library was installed
+      run: |
+        test -f a86/native/prebuilt/macosx/x86_64/liba86_jit.dylib
+        test -f a86/native/lib/liba86_jit.dylib
+
+    - name: Run tests
+      run: |
+        raco test -p a86

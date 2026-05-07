@@ -17,12 +17,27 @@
 
 (define-runtime-path here ".")
 
+(define (native-library-name)
+  (format "liba86_jit~a" (system-type 'so-suffix)))
+
+(define (native-library-candidates)
+  (list (build-path here
+                    "native"
+                    "prebuilt"
+                    (symbol->string (system-type 'os))
+                    (symbol->string (system-type 'arch))
+                    (native-library-name))
+        (build-path here
+                    "native"
+                    "lib"
+                    (native-library-name))))
+
+(define (native-library-path)
+  (or (findf file-exists? (native-library-candidates))
+      (car (reverse (native-library-candidates)))))
+
 (define liba86
-  (ffi-lib
-   (build-path here
-               "native"
-               "lib"
-               (format "liba86_jit~a" (system-type 'so-suffix)))))
+  (ffi-lib (native-library-path)))
 
 (define-ffi-definer define-a86 liba86)
 

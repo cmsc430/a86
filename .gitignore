@@ -1,0 +1,6 @@
+a86/native/build/
+a86/native/lib/
+a86/compiled/
+a86/test/compiled/
+a86/scribblings/compiled/
+out/
