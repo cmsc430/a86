@@ -44,6 +44,12 @@
    [kind _a86_extern_kind_t]
    [value _pointer]))
 
+;; Raw call-time layout used to pin C strings explicitly while loading.
+(define-cstruct _a86_extern_binding_raw
+  ([name _pointer]
+   [kind _a86_extern_kind_t]
+   [value _pointer]))
+
 ;; native functions
 (define-a86 a86_jit_create
   (_fun -> _a86_jit_t))
@@ -94,6 +100,34 @@
           (ptr-set! ptr type i (vector-ref vec i)))
         ptr)))
 
+(define (copy-cstring s)
+  (define bs (string->bytes/utf-8 s))
+  (define n (add1 (bytes-length bs)))
+  (define ptr (malloc _byte n))
+  (for ([i (in-range (bytes-length bs))])
+    (ptr-set! ptr _byte i (bytes-ref bs i)))
+  (ptr-set! ptr _byte (sub1 n) 0)
+  ptr)
+
+(define (extern-vector->c-array vec)
+  (define n (vector-length vec))
+  (if (zero? n)
+      (values #f '())
+      (let ([ptr (malloc _a86_extern_binding_raw n)])
+        (define keepalive '())
+        (for ([i (in-range n)])
+          (define binding (vector-ref vec i))
+          (define name-ptr (copy-cstring (a86_extern_binding-name binding)))
+          (set! keepalive (cons name-ptr keepalive))
+          (ptr-set! ptr
+                    _a86_extern_binding_raw
+                    i
+                    (make-a86_extern_binding_raw
+                     name-ptr
+                     (a86_extern_binding-kind binding)
+                     (a86_extern_binding-value binding))))
+        (values ptr keepalive))))
+
 ;; ----------------------------------------
 ;; exported constructors/helpers
 
@@ -112,12 +146,13 @@
 
 (define (jit-load jit code obj-vec ext-vec)
   (define obj-ptr (vector->c-array obj-vec _string))
-  (define ext-ptr (vector->c-array ext-vec _a86_extern_binding))
+  (define-values (ext-ptr ext-keepalive) (extern-vector->c-array ext-vec))
   (define p
     (a86_jit_load jit
                   code
                   obj-ptr (vector-length obj-vec)
                   ext-ptr (vector-length ext-vec)))
+  (void ext-keepalive)
   (unless p
     (jit-error jit 'jit-load "failed to load program"))
   p)
