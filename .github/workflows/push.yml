@@ -48,10 +48,27 @@ jobs:
       run: |
         sudo apt install -y libssl-dev
 
-    - name: Run tests
+    - name: Run a86 tests
       run: |
         raco test -j 4 -p a86
+
+    - name: Run langs tests
+      id: langs-tests
+      continue-on-error: true
+      run: |
         xvfb-run raco test -p langs
+
+    - name: Rerun failing langs tests serially with JIT trace
+      if: steps.langs-tests.outcome == 'failure'
+      env:
+        A86_JIT_TRACE: "1"
+      run: |
+        xvfb-run raco test -j 1 -p langs
+
+    - name: Fail job if langs tests failed
+      if: steps.langs-tests.outcome == 'failure'
+      run: |
+        exit 1
 
   debug-langs-racket-9-1:
     runs-on: ubuntu-24.04
