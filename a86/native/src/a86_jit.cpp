@@ -1,8 +1,10 @@
 #include "a86_jit.h"
 
 #include <atomic>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,6 +44,32 @@ using namespace llvm;
 namespace {
 
 std::atomic<uint64_t> NextLoadId{0};
+
+bool native_trace_enabled() {
+  const char *v = std::getenv("A86_JIT_TRACE");
+  if (!v) {
+    return false;
+  }
+  return std::strcmp(v, "") != 0 &&
+         std::strcmp(v, "0") != 0 &&
+         std::strcmp(v, "false") != 0 &&
+         std::strcmp(v, "FALSE") != 0 &&
+         std::strcmp(v, "False") != 0;
+}
+
+void native_trace(const char *fmt, ...) {
+  if (!native_trace_enabled()) {
+    return;
+  }
+
+  std::fputs("a86-jit-native: ", stderr);
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stderr, fmt, args);
+  va_end(args);
+  std::fputc('\n', stderr);
+  std::fflush(stderr);
+}
 
 struct shared_error_state {
   mutable std::mutex mu;
@@ -224,6 +252,8 @@ struct a86_program {
   a86_jit *parent = nullptr;
   orc::JITDylib *program_jd = nullptr;
   orc::ResourceTrackerSP tracker;
+  uint64_t load_id = 0;
+  std::string jd_name;
 };
 
 extern "C" {
@@ -339,7 +369,15 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   }
 
   // Create a fresh JITDylib for this program - no pooling!
-  std::string jd_name = "a86_prog_" + std::to_string(NextLoadId++);
+  uint64_t load_id = NextLoadId++;
+  std::string jd_name = "a86_prog_" + std::to_string(load_id);
+  native_trace("load id=%llu jd=%s extern_count=%d object_file_count=%d asm_bytes=%zu obj_bytes=%zu",
+               static_cast<unsigned long long>(load_id),
+               jd_name.c_str(),
+               extern_count,
+               object_file_count,
+               std::strlen(asm_text),
+               obj->getBufferSize());
   auto jd_or_err = jit->jit->createJITDylib(jd_name);
   if (!jd_or_err) {
     jit->set_error(toString(jd_or_err.takeError()));
@@ -365,12 +403,22 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
       cleanup();
       return nullptr;
     }
+    native_trace("load id=%llu jd=%s define extern name=%s kind=%d addr=%p",
+                 static_cast<unsigned long long>(load_id),
+                 jd_name.c_str(),
+                 externs[i].name,
+                 static_cast<int>(externs[i].kind),
+                 externs[i].value);
     auto sym_name = jit->jit->mangleAndIntern(externs[i].name);
     orc::ExecutorAddr addr = orc::ExecutorAddr::fromPtr(externs[i].value);
     symbol_map[sym_name] = orc::ExecutorSymbolDef(addr, JITSymbolFlags::Exported);
   }
 
   if (!symbol_map.empty()) {
+    native_trace("load id=%llu jd=%s defining %zu absolute symbols",
+                 static_cast<unsigned long long>(load_id),
+                 jd_name.c_str(),
+                 symbol_map.size());
     if (auto err = program_jd->define(orc::absoluteSymbols(std::move(symbol_map)),
                                       tracker)) {
       jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
@@ -386,6 +434,10 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
       cleanup();
       return nullptr;
     }
+    native_trace("load id=%llu jd=%s add object file path=%s",
+                 static_cast<unsigned long long>(load_id),
+                 jd_name.c_str(),
+                 object_files[i]);
     auto mb_or_err = MemoryBuffer::getFile(object_files[i]);
     if (!mb_or_err) {
       jit->set_error(
@@ -405,6 +457,10 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   }
 
   // Add the assembled a86 program object.
+  native_trace("load id=%llu jd=%s add assembled object bytes=%zu",
+               static_cast<unsigned long long>(load_id),
+               jd_name.c_str(),
+               obj->getBufferSize());
   if (auto err = jit->jit->addObjectFile(tracker, std::move(obj))) {
     jit->set_error(jit->combine_with_session_error(toString(std::move(err))));
     cleanup();
@@ -415,11 +471,19 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   prog->parent = jit;
   prog->program_jd = program_jd;
   prog->tracker = std::move(tracker);
+  prog->load_id = load_id;
+  prog->jd_name = jd_name;
+  native_trace("load id=%llu jd=%s complete",
+               static_cast<unsigned long long>(load_id),
+               prog->jd_name.c_str());
   return prog.release();
 }
 
 void a86_program_unload(a86_program_t *program) {
   if (program) {
+    native_trace("unload id=%llu jd=%s",
+                 static_cast<unsigned long long>(program->load_id),
+                 program->jd_name.c_str());
     if (program->tracker && program->parent && program->parent->jit) {
       // Remove all resources tracked to this program.
       // This effectively empties the JITDylib and allows ORC to clean up.
@@ -467,8 +531,17 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     return result;
   }
 
+  native_trace("lookup id=%llu jd=%s label=%s argc=%d",
+               static_cast<unsigned long long>(program->load_id),
+               program->jd_name.c_str(),
+               label,
+               argc);
   auto sym_or_err = jit->jit->lookup(*program->program_jd, label);
   if (!sym_or_err) {
+    native_trace("lookup id=%llu jd=%s label=%s failed",
+                 static_cast<unsigned long long>(program->load_id),
+                 program->jd_name.c_str(),
+                 label);
     std::string high =
         "lookup of label '" + std::string(label) + "' failed: " +
         toString(sym_or_err.takeError());
@@ -476,6 +549,12 @@ a86_call_result_t a86_program_call(a86_program_t *program,
     result.error_message = jit->error_cstr();
     return result;
   }
+
+  native_trace("lookup id=%llu jd=%s label=%s addr=0x%llx",
+               static_cast<unsigned long long>(program->load_id),
+               program->jd_name.c_str(),
+               label,
+               static_cast<unsigned long long>(sym_or_err->getValue()));
 
   uint64_t value = 0;
   switch (argc) {
