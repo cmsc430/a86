@@ -1,11 +1,9 @@
 #lang racket
 
-(require setup/cross-system)
+(require racket/runtime-path
+         setup/cross-system)
 
-(define native-dir
-  (simplify-path
-   (path->complete-path
-    (build-path (current-directory) "a86" "native"))))
+(define-runtime-path native-dir ".")
 
 (define lib-name
   (format "liba86_jit~a" (cross-system-type 'so-suffix)))
@@ -22,12 +20,16 @@
 (define dst
   (build-path dst-dir lib-name))
 
-(unless (file-exists? src)
-  (error 'stage-prebuilt
-         (format "expected built library at ~a; run `make -C a86/native all` first"
-                 src)))
+(define (main)
+  (unless (file-exists? src)
+    (error 'stage-prebuilt
+           (format "expected built library at ~a; run `make -C a86/native all` first"
+                   src)))
 
-(make-directory* dst-dir)
-(copy-file src dst #t)
+  (make-directory* dst-dir)
+  (copy-file src dst #t)
 
-(printf "a86: staged prebuilt library to ~a\n" dst)
+  (printf "a86: staged prebuilt library to ~a\n" dst))
+
+(module+ main
+  (main))
