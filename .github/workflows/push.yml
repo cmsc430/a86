@@ -52,3 +52,53 @@ jobs:
       run: |
         raco test -j 4 -p a86
         xvfb-run raco test -p langs
+
+  debug-langs-racket-9-1:
+    runs-on: ubuntu-24.04
+    name: Debug langs / Ubuntu 24.04 / Racket 9.1
+
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Install Racket
+      uses: Bogdanp/setup-racket@v1.14
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        variant: 'CS'
+        version: '9.1'
+
+    - name: Install LLVM
+      uses: ZhongRuoyu/setup-llvm@v0
+      with:
+        llvm-version: 22
+
+    - name: Version info
+      run: |
+        racket --version
+        clang --version
+        gcc --version
+
+    - name: Install a86 package
+      run: |
+        raco pkg install --no-docs ../a86/
+
+    - name: Install langs package
+      run: |
+        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#next'
+
+    - name: Install libssl
+      run: |
+        sudo apt install -y libssl-dev
+
+    - name: Run a86 tests
+      run: |
+        raco test -j 4 -p a86
+
+    - name: Run langs tests serially with JIT trace
+      env:
+        A86_JIT_TRACE: "1"
+      run: |
+        xvfb-run raco test -j 1 -p langs
