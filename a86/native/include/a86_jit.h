@@ -31,12 +31,6 @@ typedef enum {
   A86_EXTERN_GLOBAL   = 1
 } a86_extern_kind_t;
 
-typedef struct {
-  const char *name;
-  a86_extern_kind_t kind;
-  void *value;
-} a86_extern_binding_t;
-
 /*
  * Create / destroy a JIT session.
  *
@@ -54,8 +48,9 @@ void a86_jit_destroy(a86_jit_t *jit);
  * `object_files` is an array of paths to relocatable object files (.o) that
  * should be linked with the program.
  *
- * `externs` is an array of host-provided external symbol bindings used to
- * resolve names declared with `Extern`.
+ * `extern_names`, `extern_kinds`, and `extern_values` are parallel arrays of
+ * host-provided external symbol bindings used to resolve names declared with
+ * `Extern`.
  *
  * On success, returns a live program handle. On failure, returns NULL and the
  * error may be retrieved with `a86_jit_last_error`.
@@ -64,7 +59,9 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
                             const char *asm_text,
                             const char *const *object_files,
                             int object_file_count,
-                            const a86_extern_binding_t *externs,
+                            const char *const *extern_names,
+                            const int *extern_kinds,
+                            void *const *extern_values,
                             int extern_count);
 
 /*

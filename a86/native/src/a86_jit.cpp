@@ -337,7 +337,9 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
                             const char *asm_text,
                             const char *const *object_files,
                             int object_file_count,
-                            const a86_extern_binding_t *externs,
+                            const char *const *extern_names,
+                            const int *extern_kinds,
+                            void *const *extern_values,
                             int extern_count) {
   if (!jit || !jit->jit || !jit->support_jd) {
     return nullptr;
@@ -362,8 +364,9 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
     jit->set_error("object_files is null but object_file_count > 0");
     return nullptr;
   }
-  if (extern_count > 0 && !externs) {
-    jit->set_error("externs is null but extern_count > 0");
+  if (extern_count > 0 &&
+      (!extern_names || !extern_kinds || !extern_values)) {
+    jit->set_error("extern arrays are null but extern_count > 0");
     return nullptr;
   }
 
@@ -428,13 +431,15 @@ a86_program_t *a86_jit_load(a86_jit_t *jit,
   // Copy host-provided externs into program-owned storage before defining
   // symbols so their full payload remains stable for the program lifetime.
   for (int i = 0; i < extern_count; ++i) {
-    if (!externs[i].name) {
+    if (!extern_names[i]) {
       jit->set_error("extern binding has null name");
       cleanup();
       return nullptr;
     }
     prog->externs.push_back(
-        extern_binding_copy{externs[i].name, externs[i].kind, externs[i].value});
+        extern_binding_copy{extern_names[i],
+                            static_cast<a86_extern_kind_t>(extern_kinds[i]),
+                            extern_values[i]});
   }
 
   // Install host-provided externs as absolute symbols.

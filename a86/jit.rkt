@@ -44,12 +44,6 @@
    [kind _a86_extern_kind_t]
    [value _pointer]))
 
-;; Raw call-time layout used to pin C strings explicitly while loading.
-(define-cstruct _a86_extern_binding_raw
-  ([name _pointer]
-   [kind _a86_extern_kind_t]
-   [value _pointer]))
-
 ;; native functions
 (define-a86 a86_jit_create
   (_fun -> _a86_jit_t))
@@ -64,7 +58,10 @@
   (_fun _a86_jit_t
         _string
         _pointer _int        ; object files
-        _pointer _int        ; externs
+        _pointer             ; extern names
+        _pointer             ; extern kinds
+        _pointer             ; extern values
+        _int
         -> _a86_program_t))
 
 (define-a86 a86_program_call
@@ -109,24 +106,22 @@
   (ptr-set! ptr _byte (sub1 n) 0)
   ptr)
 
-(define (extern-vector->c-array vec)
+(define (extern-vector->c-arrays vec)
   (define n (vector-length vec))
   (if (zero? n)
-      (values #f '())
-      (let ([ptr (malloc _a86_extern_binding_raw n)])
+      (values #f #f #f '())
+      (let ([names-ptr (malloc _pointer n)]
+            [kinds-ptr (malloc _a86_extern_kind_t n)]
+            [values-ptr (malloc _pointer n)])
         (define keepalive '())
         (for ([i (in-range n)])
           (define binding (vector-ref vec i))
           (define name-ptr (copy-cstring (a86_extern_binding-name binding)))
           (set! keepalive (cons name-ptr keepalive))
-          (ptr-set! ptr
-                    _a86_extern_binding_raw
-                    i
-                    (make-a86_extern_binding_raw
-                     name-ptr
-                     (a86_extern_binding-kind binding)
-                     (a86_extern_binding-value binding))))
-        (values ptr keepalive))))
+          (ptr-set! names-ptr _pointer i name-ptr)
+          (ptr-set! kinds-ptr _a86_extern_kind_t i (a86_extern_binding-kind binding))
+          (ptr-set! values-ptr _pointer i (a86_extern_binding-value binding)))
+        (values names-ptr kinds-ptr values-ptr keepalive))))
 
 ;; ----------------------------------------
 ;; exported constructors/helpers
@@ -146,12 +141,16 @@
 
 (define (jit-load jit code obj-vec ext-vec)
   (define obj-ptr (vector->c-array obj-vec _string))
-  (define-values (ext-ptr ext-keepalive) (extern-vector->c-array ext-vec))
+  (define-values (ext-names-ptr ext-kinds-ptr ext-values-ptr ext-keepalive)
+    (extern-vector->c-arrays ext-vec))
   (define p
     (a86_jit_load jit
                   code
                   obj-ptr (vector-length obj-vec)
-                  ext-ptr (vector-length ext-vec)))
+                  ext-names-ptr
+                  ext-kinds-ptr
+                  ext-values-ptr
+                  (vector-length ext-vec)))
   (void ext-keepalive)
   (unless p
     (jit-error jit 'jit-load "failed to load program"))
