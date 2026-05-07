@@ -62,6 +62,16 @@
 (define A86_EXTERN_FUNCTION 0)
 (define A86_EXTERN_GLOBAL   1)
 
+(define (jit-trace-enabled?)
+  (define v (getenv "A86_JIT_TRACE"))
+  (and v (not (member v '("" "0" "false" "FALSE" "False")))))
+
+(define (jit-trace fmt . args)
+  (when (jit-trace-enabled?)
+    (parameterize ([current-output-port (current-error-port)])
+      (apply printf (string-append "a86-jit: " fmt "\n") args)
+      (flush-output))))
+
 ;; ------------------------------------------------------------
 ;; current JIT environment
 
@@ -156,6 +166,9 @@
   (define asm-str (program->asm-string prog))
   (define-values (ext-vec keepalive) (prepare-externs externs))
   (define obj-vec (prepare-object-files objs))
+  (jit-trace "load externs=~s objects=~s"
+             (map extern-name externs)
+             objs)
   (define p (jit-load jit asm-str obj-vec ext-vec))
   (asm-program p keepalive))
 
@@ -165,7 +178,14 @@
     (error 'asm-call "program has already been unloaded"))
   (define argv
     (list->vector (map arg->u64 args)))
-  (jit-call (asm-program-ptr p) label argv))
+  (with-handlers ([exn:fail?
+                   (λ (e)
+                     (jit-trace "call label=~s args=~s failed: ~a"
+                                label
+                                args
+                                (exn-message e))
+                     (raise e))])
+    (jit-call (asm-program-ptr p) label argv)))
 
 (define (asm-unload p)
   (define raw (asm-program-ptr p))
