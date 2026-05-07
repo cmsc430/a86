@@ -653,6 +653,12 @@ a86_call_result_t a86_program_call(a86_program_t *program,
       return result;
   }
 
+  native_trace("call id=%llu jd=%s label=%s returned value=0x%llx",
+               static_cast<unsigned long long>(program->load_id),
+               program->jd_name.c_str(),
+               label,
+               static_cast<unsigned long long>(value));
+
   result.ok = 1;
   result.value = value;
   result.error_message = nullptr;
