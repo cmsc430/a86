@@ -72,6 +72,24 @@
       (apply printf (string-append "a86-jit: " fmt "\n") args)
       (flush-output))))
 
+(define (trace-extern-procedure name proc)
+  (if (not (jit-trace-enabled?))
+      proc
+      (lambda args
+        (jit-trace "extern ~a args=~s" name args)
+        (with-handlers ([exn:fail?
+                         (lambda (e)
+                           (jit-trace "extern ~a raised: ~a"
+                                      name
+                                      (exn-message e))
+                           (raise e))])
+          (define vs
+            (call-with-values
+             (lambda () (apply proc args))
+             list))
+          (jit-trace "extern ~a result=~s" name vs)
+          (apply values vs)))))
+
 ;; ------------------------------------------------------------
 ;; current JIT environment
 
@@ -129,7 +147,7 @@
       (match-define (extern name value ctype) x)
       (cond
         [(procedure? value)
-         (define fptr (function-ptr value ctype))
+         (define fptr (function-ptr (trace-extern-procedure name value) ctype))
          (set! keepalive (cons fptr keepalive))
          (make-jit-extern-binding
           (symbol->string name)
