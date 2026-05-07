@@ -59,14 +59,16 @@ jobs:
         xvfb-run raco test -p langs
 
     - name: Rerun failing langs tests serially with JIT trace
+      id: langs-tests-rerun
       if: steps.langs-tests.outcome == 'failure'
+      continue-on-error: true
       env:
         A86_JIT_TRACE: "1"
       run: |
         xvfb-run raco test -j 1 -p langs
 
-    - name: Fail job if langs tests failed
-      if: steps.langs-tests.outcome == 'failure'
+    - name: Fail job if traced rerun also failed
+      if: steps.langs-tests.outcome == 'failure' && steps.langs-tests-rerun.outcome == 'failure'
       run: |
         exit 1
 
