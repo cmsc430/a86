@@ -39,10 +39,7 @@
 ;; extern binding
 (define _a86_extern_kind_t _int)
 
-(define-cstruct _a86_extern_binding
-  ([name _string]
-   [kind _a86_extern_kind_t]
-   [value _pointer]))
+(struct jit-extern-binding (name kind value) #:transparent)
 
 ;; native functions
 (define-a86 a86_jit_create
@@ -116,18 +113,18 @@
         (define keepalive '())
         (for ([i (in-range n)])
           (define binding (vector-ref vec i))
-          (define name-ptr (copy-cstring (a86_extern_binding-name binding)))
+          (define name-ptr (copy-cstring (jit-extern-binding-name binding)))
           (set! keepalive (cons name-ptr keepalive))
           (ptr-set! names-ptr _pointer i name-ptr)
-          (ptr-set! kinds-ptr _a86_extern_kind_t i (a86_extern_binding-kind binding))
-          (ptr-set! values-ptr _pointer i (a86_extern_binding-value binding)))
+          (ptr-set! kinds-ptr _a86_extern_kind_t i (jit-extern-binding-kind binding))
+          (ptr-set! values-ptr _pointer i (jit-extern-binding-value binding)))
         (values names-ptr kinds-ptr values-ptr keepalive))))
 
 ;; ----------------------------------------
 ;; exported constructors/helpers
 
 (define (make-jit-extern-binding name kind value)
-  (make-a86_extern_binding name kind value))
+  (jit-extern-binding name kind value))
 
 ;; ----------------------------------------
 ;; exported operations
