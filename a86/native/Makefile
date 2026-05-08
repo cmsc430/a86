@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   LLVM_SYSTEM_LIBS := /usr/local/lib/libzstd.a -lz -lxml2
 else
   SHARED_LDFLAGS := -shared
-  LLVM_LINK_MODE := --link-shared
+  LLVM_LINK_MODE := --link-static
   LLVM_SYSTEM_LIBS := $(shell $(LLVM_CONFIG) --system-libs)
 endif
 
