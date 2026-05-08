@@ -99,6 +99,10 @@
 (define current-externs
   (make-parameter '()))
 
+(define jit-no-unload?
+  (let ([v (getenv "A86_JIT_NO_UNLOAD")])
+    (and v (not (member (string-downcase v) '("0" "false" "no" ""))))))
+
 (define current-objects
   (make-parameter '()))
 
@@ -232,8 +236,11 @@
 (define (asm-unload p)
   (define raw (asm-program-ptr p))
   (when raw
-    (jit-unload raw)
-    (set-asm-program-ptr! p #f)))
+    (if jit-no-unload?
+        (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
+        (begin
+          (jit-unload raw)
+          (set-asm-program-ptr! p #f)))))
 
 (define (call-with-asm-loaded prog f
                               #:externs [externs (current-externs)]
