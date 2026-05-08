@@ -113,6 +113,8 @@
 
 (struct extern (name value ctype) #:transparent)
 
+(struct cached-callback (name ctype wrapper fptr) #:transparent)
+
 ;; ------------------------------------------------------------
 ;; loaded program wrapper
 ;;
@@ -140,6 +142,28 @@
    (simplify-path
     (path->complete-path path (current-directory)))))
 
+;; Hold callback trampolines for the life of the process so long-running test
+;; runs do not depend on per-load callback allocation or GC timing.
+(define callback-cache (make-hasheq))
+
+(define (cached-function-ptr name value ctype)
+  (define entries (hash-ref callback-cache value '()))
+  (define hit
+    (for/or ([entry entries])
+      (and (eq? name (cached-callback-name entry))
+           (equal? ctype (cached-callback-ctype entry))
+           entry)))
+  (cond
+    [hit
+     (cached-callback-fptr hit)]
+    [else
+     (define wrapper (trace-extern-procedure name value))
+     (define fptr (function-ptr wrapper ctype))
+     (hash-set! callback-cache
+                value
+                (cons (cached-callback name ctype wrapper fptr) entries))
+     fptr]))
+
 (define (prepare-externs externs)
   (define keepalive '())
   (define bindings
@@ -147,7 +171,7 @@
       (match-define (extern name value ctype) x)
       (cond
         [(procedure? value)
-         (define fptr (function-ptr (trace-extern-procedure name value) ctype))
+         (define fptr (cached-function-ptr name value ctype))
          (set! keepalive (cons fptr keepalive))
          (make-jit-extern-binding
           (symbol->string name)
