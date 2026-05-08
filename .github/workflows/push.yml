@@ -8,7 +8,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
         racket-variant: ['CS']
-        racket-version: ['8.6', '8.10', '8.14', '8.18', 'stable', 'current']
+        racket-version: ['8.6', '8.10', '8.14', '8.18', '9.1', 'stable', 'current']
     runs-on: ${{ matrix.os }}
     name: OS ${{ matrix.os }} / Racket ${{ matrix.racket-version }}
 
@@ -18,7 +18,7 @@ jobs:
       uses: actions/checkout@main
 
     - name: Install Racket
-      uses: Bogdanp/setup-racket@v1.14
+      uses: Bogdanp/setup-racket@v1.15
       with:
         architecture: 'x64'
         distribution: 'full'
