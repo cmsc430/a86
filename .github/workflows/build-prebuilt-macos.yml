@@ -2,6 +2,10 @@ name: Build Prebuilt macOS Binary
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   build-prebuilt-macos:
     runs-on: macos-26-intel
@@ -43,3 +47,16 @@ jobs:
         name: a86-prebuilt-macos-x86_64
         path: a86/native/prebuilt/macosx/x86_64/liba86_jit.dylib
         if-no-files-found: error
+
+    - name: Create pull request for updated dylib
+      uses: peter-evans/create-pull-request@v8
+      with:
+        branch: update-prebuilt-macos-x86_64
+        delete-branch: true
+        commit-message: Update macOS x86_64 prebuilt JIT library
+        title: Update macOS x86_64 prebuilt JIT library
+        body: |
+          Rebuilds `a86/native/prebuilt/macosx/x86_64/liba86_jit.dylib`
+          using the `Build Prebuilt macOS Binary` workflow on GitHub Actions.
+        add-paths: |
+          a86/native/prebuilt/macosx/x86_64/liba86_jit.dylib
