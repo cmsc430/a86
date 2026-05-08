@@ -1,6 +1,5 @@
 name: Build Prebuilt macOS Binary
-on:
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 permissions:
   contents: write
