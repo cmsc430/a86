@@ -3,7 +3,7 @@ on: [push, workflow_dispatch]
 
 jobs:
   test-prebuilt-macos:
-    runs-on: macos-13
+    runs-on: macos-26-intel
     name: macOS prebuilt / Racket 8.18
 
     steps:
