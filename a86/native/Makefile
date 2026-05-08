@@ -17,7 +17,7 @@ ifeq ($(UNAME_S),Darwin)
 else
   SHARED_LDFLAGS := -shared
   LLVM_LINK_MODE := --link-static
-  LLVM_SYSTEM_LIBS := $(shell $(LLVM_CONFIG) --system-libs)
+  LLVM_SYSTEM_LIBS := $(shell $(LLVM_CONFIG) --system-libs $(LLVM_LINK_MODE))
 endif
 
 LIB_NAME := liba86_jit$(SO_SUFFIX)
