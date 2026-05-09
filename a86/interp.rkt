@@ -14,7 +14,7 @@
    (->* ((listof instruction?))
         (#:externs (listof extern?)
          #:objects (listof path-string?)
-         #:jit jit?)
+         #:jit (or/c #f jit?))
         asm-program?)]
   [asm-call
    (->* (asm-program? symbol?)
@@ -27,7 +27,7 @@
    (->* ((listof instruction?) (-> asm-program? any/c))
         (#:externs (listof extern?)
          #:objects (listof path-string?)
-         #:jit jit?)
+         #:jit (or/c #f jit?))
         any/c)]
   [asm-interp
    (->* () #:rest (or/c (listof instruction?) (listof (listof instruction?))) any/c)]
@@ -125,8 +125,10 @@
 ;; `ptr` is the raw native program handle.
 ;; `keepalive` holds any callback pointers so they are not GC'd
 ;; while the program is live.
+;; `jit` is the owning JIT when the program was loaded into an isolated
+;; one-shot JIT. `owned?` controls whether unload should close that JIT.
 
-(struct asm-program (ptr keepalive) #:transparent #:mutable)
+(struct asm-program (ptr keepalive jit owned?) #:transparent #:mutable)
 
 ;; ------------------------------------------------------------
 ;; helpers
@@ -208,15 +210,17 @@
 (define (asm-load prog
                   #:externs [externs (current-externs)]
                   #:objects [objs (current-objects)]
-                  #:jit [jit (current-jit)])
+                  #:jit [jit #f])
+  (define owned? (not jit))
+  (define use-jit (or jit (make-jit)))
   (define asm-str (program->asm-string prog))
   (define-values (ext-vec keepalive) (prepare-externs externs))
   (define obj-vec (prepare-object-files objs))
   (jit-trace "load externs=~s objects=~s"
              (map extern-name externs)
              objs)
-  (define p (jit-load jit asm-str obj-vec ext-vec))
-  (asm-program p keepalive))
+  (define p (jit-load use-jit asm-str obj-vec ext-vec))
+  (asm-program p keepalive use-jit owned?))
 
 (define (asm-call p label . args)
   (define raw (asm-program-ptr p))
@@ -236,16 +240,21 @@
 (define (asm-unload p)
   (define raw (asm-program-ptr p))
   (when raw
+    (define maybe-jit (asm-program-jit p))
+    (define owned? (asm-program-owned? p))
     (if jit-no-unload?
         (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
         (begin
           (jit-unload raw)
-          (set-asm-program-ptr! p #f)))))
+          (when (and owned? maybe-jit)
+            (jit-close maybe-jit))
+          (set-asm-program-ptr! p #f)
+          (set-asm-program-jit! p #f)))))
 
 (define (call-with-asm-loaded prog f
                               #:externs [externs (current-externs)]
                               #:objects [objs (current-objects)]
-                              #:jit [jit (current-jit)])
+                              #:jit [jit #f])
   (define p (asm-load prog
                       #:externs externs
                       #:objects objs
@@ -255,21 +264,10 @@
     (λ () (f p))
     (λ () (asm-unload p))))
 
-(define (call-with-fresh-jit f)
-  ;; Keep `asm-interp` isolated from any long-lived ORC state.
-  (define jit (make-jit))
-  (dynamic-wind
-    void
-    (λ () (f jit))
-    (λ () (jit-close jit))))
-
 (define (asm-interp . asm)
   (define-values (init-label code) (asm-fixup asm))
-  (call-with-fresh-jit
-   (λ (jit)
-     (call-with-asm-loaded code
-                           (λ (p) (asm-call p init-label))
-                           #:jit jit))))
+  (call-with-asm-loaded code
+                        (λ (p) (asm-call p init-label))))
 
 (define (asm-interp/io . asm+in)
   (match asm+in
