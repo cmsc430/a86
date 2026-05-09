@@ -122,13 +122,15 @@
 ;; ------------------------------------------------------------
 ;; loaded program wrapper
 ;;
-;; `ptr` is the raw native program handle.
-;; `keepalive` holds any callback pointers so they are not GC'd
-;; while the program is live.
-;; `jit` is the owning JIT when the program was loaded into an isolated
-;; one-shot JIT. `owned?` controls whether unload should close that JIT.
+;; `ptr` is the raw native program handle when a program has been loaded
+;; through the low-level persistent path. `keepalive` holds any callback
+;; pointers so they are not GC'd while the program is live.
+;;
+;; `runner` is a lazy one-shot execution thunk used by the default lifecycle:
+;; the program is not loaded until `asm-call`, at which point load/call/unload
+;; all happen in one isolated JIT.
 
-(struct asm-program (ptr keepalive jit owned?) #:transparent #:mutable)
+(struct asm-program (ptr keepalive jit owned? runner) #:transparent #:mutable)
 
 ;; ------------------------------------------------------------
 ;; helpers
@@ -196,6 +198,18 @@
   (for/vector ([p objs])
     (resolve-object-path p)))
 
+(define (call-program-on-fresh-jit asm-str obj-vec ext-vec label argv)
+  (define jit (make-jit))
+  (dynamic-wind
+    void
+    (lambda ()
+      (define p (jit-load jit asm-str obj-vec ext-vec))
+      (dynamic-wind
+        void
+        (lambda () (jit-call p label argv))
+        (lambda () (jit-unload p))))
+    (lambda () (jit-close jit))))
+
 (define (arg->u64 x)
   (cond
     [(exact-integer? x)
@@ -211,45 +225,65 @@
                   #:externs [externs (current-externs)]
                   #:objects [objs (current-objects)]
                   #:jit [jit #f])
-  (define owned? (not jit))
-  (define use-jit (or jit (make-jit)))
   (define asm-str (program->asm-string prog))
   (define-values (ext-vec keepalive) (prepare-externs externs))
   (define obj-vec (prepare-object-files objs))
   (jit-trace "load externs=~s objects=~s"
              (map extern-name externs)
              objs)
-  (define p (jit-load use-jit asm-str obj-vec ext-vec))
-  (asm-program p keepalive use-jit owned?))
+  (cond
+    [jit
+     (define p (jit-load jit asm-str obj-vec ext-vec))
+     (asm-program p keepalive jit #f #f)]
+    [else
+     (define (runner label argv)
+       (call-program-on-fresh-jit asm-str obj-vec ext-vec label argv))
+     (asm-program #f keepalive #f #f runner)]))
 
 (define (asm-call p label . args)
   (define raw (asm-program-ptr p))
-  (unless raw
-    (error 'asm-call "program has already been unloaded"))
   (define argv
     (list->vector (map arg->u64 args)))
-  (with-handlers ([exn:fail?
-                   (λ (e)
-                     (jit-trace "call label=~s args=~s failed: ~a"
-                                label
-                                args
-                                (exn-message e))
-                     (raise e))])
-    (jit-call (asm-program-ptr p) label argv)))
+  (define runner (asm-program-runner p))
+  (cond
+    [runner
+     (with-handlers ([exn:fail?
+                      (λ (e)
+                        (jit-trace "call label=~s args=~s failed: ~a"
+                                   label
+                                   args
+                                   (exn-message e))
+                        (raise e))])
+       (runner label argv))]
+    [raw
+     (with-handlers ([exn:fail?
+                      (λ (e)
+                        (jit-trace "call label=~s args=~s failed: ~a"
+                                   label
+                                   args
+                                   (exn-message e))
+                        (raise e))])
+       (jit-call raw label argv))]
+    [else
+     (error 'asm-call "program has already been unloaded")]))
 
 (define (asm-unload p)
   (define raw (asm-program-ptr p))
-  (when raw
-    (define maybe-jit (asm-program-jit p))
-    (define owned? (asm-program-owned? p))
-    (if jit-no-unload?
-        (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
-        (begin
-          (jit-unload raw)
-          (when (and owned? maybe-jit)
-            (jit-close maybe-jit))
-          (set-asm-program-ptr! p #f)
-          (set-asm-program-jit! p #f)))))
+  (cond
+    [raw
+     (define maybe-jit (asm-program-jit p))
+     (define owned? (asm-program-owned? p))
+     (if jit-no-unload?
+         (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
+         (begin
+           (jit-unload raw)
+           (when (and owned? maybe-jit)
+             (jit-close maybe-jit))
+           (set-asm-program-ptr! p #f)
+           (set-asm-program-jit! p #f)))]
+    [(asm-program-runner p)
+     (set-asm-program-runner! p #f)]
+    [else (void)]))
 
 (define (call-with-asm-loaded prog f
                               #:externs [externs (current-externs)]
