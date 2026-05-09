@@ -45,7 +45,7 @@ jobs:
 
     - name: Run a86 tests
       run: |
-        raco test -j 4 -p a86
+        raco test -p a86
 
     - name: Run langs tests
       run: |
