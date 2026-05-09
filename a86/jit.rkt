@@ -68,7 +68,7 @@
 
 (define-a86 a86_jit_load
   (_fun _a86_jit_t
-        _string
+        _pointer
         _pointer _int        ; object files
         _pointer             ; extern names
         _pointer             ; extern kinds
@@ -78,7 +78,7 @@
 
 (define-a86 a86_program_call
   (_fun _a86_program_t
-        _string
+        _pointer
         _pointer _int
         -> _a86_call_result))
 
@@ -100,11 +100,11 @@
              fallback
              (decode-error-pointer p))))
 
-(define (vector->c-array vec type)
+(define (vector->raw-c-array vec type)
   (define n (vector-length vec))
   (if (zero? n)
       #f
-      (let ([ptr (malloc type n)])
+      (let ([ptr (malloc type n 'raw)])
         (for ([i (in-range n)])
           (ptr-set! ptr type i (vector-ref vec i)))
         ptr)))
@@ -112,19 +112,31 @@
 (define (copy-cstring s)
   (define bs (string->bytes/utf-8 s))
   (define n (add1 (bytes-length bs)))
-  (define ptr (malloc _byte n))
+  (define ptr (malloc _byte n 'raw))
   (for ([i (in-range (bytes-length bs))])
     (ptr-set! ptr _byte i (bytes-ref bs i)))
   (ptr-set! ptr _byte (sub1 n) 0)
   ptr)
 
+(define (string-vector->raw-c-array vec)
+  (define n (vector-length vec))
+  (if (zero? n)
+      (values #f '())
+      (let ([ptr (malloc _pointer n 'raw)])
+        (define keepalive '())
+        (for ([i (in-range n)])
+          (define str-ptr (copy-cstring (vector-ref vec i)))
+          (set! keepalive (cons str-ptr keepalive))
+          (ptr-set! ptr _pointer i str-ptr))
+        (values ptr keepalive))))
+
 (define (extern-vector->c-arrays vec)
   (define n (vector-length vec))
   (if (zero? n)
       (values #f #f #f '())
-      (let ([names-ptr (malloc _pointer n)]
-            [kinds-ptr (malloc _a86_extern_kind_t n)]
-            [values-ptr (malloc _pointer n)])
+      (let ([names-ptr (malloc _pointer n 'raw)]
+            [kinds-ptr (malloc _a86_extern_kind_t n 'raw)]
+            [values-ptr (malloc _pointer n 'raw)])
         (define keepalive '())
         (for ([i (in-range n)])
           (define binding (vector-ref vec i))
@@ -134,6 +146,11 @@
           (ptr-set! kinds-ptr _a86_extern_kind_t i (jit-extern-binding-kind binding))
           (ptr-set! values-ptr _pointer i (jit-extern-binding-value binding)))
         (values names-ptr kinds-ptr values-ptr keepalive))))
+
+(define (free-pointers ptrs)
+  (for ([ptr (in-list ptrs)]
+        #:when ptr)
+    (free ptr)))
 
 ;; ----------------------------------------
 ;; exported constructors/helpers
@@ -152,28 +169,44 @@
   (a86_jit_destroy jit))
 
 (define (jit-load jit code obj-vec ext-vec)
-  (define obj-ptr (vector->c-array obj-vec _string))
+  (define code-ptr (copy-cstring code))
+  (define-values (obj-ptr obj-keepalive)
+    (string-vector->raw-c-array obj-vec))
   (define-values (ext-names-ptr ext-kinds-ptr ext-values-ptr ext-keepalive)
     (extern-vector->c-arrays ext-vec))
+  (define transient-ptrs
+    (append (list code-ptr obj-ptr ext-names-ptr ext-kinds-ptr ext-values-ptr)
+            obj-keepalive
+            ext-keepalive))
   (define p
-    (a86_jit_load jit
-                  code
-                  obj-ptr (vector-length obj-vec)
-                  ext-names-ptr
-                  ext-kinds-ptr
-                  ext-values-ptr
-                  (vector-length ext-vec)))
-  (void ext-keepalive)
+    (dynamic-wind
+      void
+      (λ ()
+        (a86_jit_load jit
+                      code-ptr
+                      obj-ptr (vector-length obj-vec)
+                      ext-names-ptr
+                      ext-kinds-ptr
+                      ext-values-ptr
+                      (vector-length ext-vec)))
+      (λ ()
+        (free-pointers transient-ptrs))))
   (unless p
     (jit-error jit 'jit-load "failed to load program"))
   p)
 
 (define (jit-call p label args)
   (define argc (vector-length args))
-  (define argv (vector->c-array args _uint64))
+  (define label-ptr (copy-cstring (symbol->string label)))
+  (define argv (vector->raw-c-array args _uint64))
   (define r
-    (guard-foreign-escape
-     (a86_program_call p (symbol->string label) argv argc)))
+    (dynamic-wind
+      void
+      (λ ()
+        (guard-foreign-escape
+         (a86_program_call p label-ptr argv argc)))
+      (λ ()
+        (free-pointers (list label-ptr argv)))))
   (if (= 1 (a86_call_result-ok r))
       (a86_call_result-value r)
       (error 'jit-call
