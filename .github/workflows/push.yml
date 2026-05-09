@@ -36,8 +36,8 @@ jobs:
 
     - name: Install langs package
       run: |
-        # This *should* use the locally installed a86
-        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#next'
+        git clone --branch "${{ github.ref_name }}" --single-branch https://github.com/cmsc430/langs.git ../langs
+        raco pkg install --auto --no-docs ../langs/
 
     - name: Install libssl
       run: |
@@ -49,4 +49,4 @@ jobs:
 
     - name: Run langs tests
       run: |
-        xvfb-run raco test -j 1 -p langs
+        xvfb-run raco test -p langs
