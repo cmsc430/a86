@@ -245,9 +245,11 @@
     (if jit-no-unload?
         (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
         (begin
-          (jit-unload raw)
-          (when (and owned? maybe-jit)
-            (jit-close maybe-jit))
+          (if (and owned? maybe-jit)
+              ;; For the default one-program JIT path, avoid explicitly
+              ;; removing ORC resources before tearing down the whole JIT.
+              (jit-close maybe-jit)
+              (jit-unload raw))
           (set-asm-program-ptr! p #f)
           (set-asm-program-jit! p #f)))))
 
