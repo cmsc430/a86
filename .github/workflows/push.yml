@@ -4,10 +4,11 @@ on: [push, workflow_dispatch]
 jobs:
   build-and-test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
         racket-variant: ['CS']
-        racket-version: ['8.6', '8.10', '8.14', '8.18', 'stable', 'current']
+        racket-version: ['8.6', '8.10', '8.14', '8.18', '9.1', 'stable', 'current']
     runs-on: ${{ matrix.os }}
     name: OS ${{ matrix.os }} / Racket ${{ matrix.racket-version }}
 
@@ -17,31 +18,17 @@ jobs:
       uses: actions/checkout@main
 
     - name: Install Racket
-      uses: Bogdanp/setup-racket@v1.14
+      uses: Bogdanp/setup-racket@v1.15
       with:
         architecture: 'x64'
         distribution: 'full'
         variant: ${{ matrix.racket-variant }}
         version: ${{ matrix.racket-version }}
 
-    - name: Install clang
-      run: |
-        sudo apt install -y clang libssl-dev
-
     - name: Version info
       run: |
         clang --version
         gcc --version
-
-    - name: Cache Racket packages
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.racket
-          ~/.cache/racket
-          ~/.local/share/racket
-          ~/Library/Caches/Racket
-        key: racket-${{ matrix.racket-variant }}-${{ matrix.racket-version }}-${{ matrix.os }}
 
     - name: Install a86 package
       run: |
@@ -49,10 +36,17 @@ jobs:
 
     - name: Install langs package
       run: |
-        # This *should* use the locally installed a86
-        raco pkg install --auto 'https://github.com/cmsc430/langs.git?#main'
+        git clone --branch "${{ github.ref_name }}" --single-branch https://github.com/cmsc430/langs.git ../langs
+        raco pkg install --auto --no-docs ../langs/
 
-    - name: Run tests
+    - name: Install libssl
       run: |
-        xvfb-run raco test -p a86
+        sudo apt install -y libssl-dev
+
+    - name: Run a86 tests
+      run: |
+        raco test -p a86
+
+    - name: Run langs tests
+      run: |
         xvfb-run raco test -p langs

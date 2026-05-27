@@ -1,0 +1,65 @@
+name: Build Prebuilt Linux Binary
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-prebuilt-linux:
+    runs-on: ubuntu-22.04
+    name: Build Linux prebuilt / Racket 8.18
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Install Racket
+      uses: Bogdanp/setup-racket@v1.15
+      with:
+        architecture: x64
+        distribution: full
+        variant: CS
+        version: "8.18"
+
+    - name: Install LLVM
+      uses: ZhongRuoyu/setup-llvm@v0
+      with:
+        llvm-version: 22
+
+    - name: Install native build dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y libxml2-dev zlib1g-dev libzstd-dev
+
+    - name: Build native JIT library
+      run: |
+        make -C a86/native clean all LLVM_CONFIG=llvm-config
+
+    - name: Stage packaged prebuilt library
+      run: |
+        racket a86/native/stage-prebuilt.rkt
+
+    - name: Check packaged shared object linkage
+      run: |
+        ldd a86/native/prebuilt/unix/x86_64/liba86_jit.so
+
+    - name: Upload packaged shared object
+      uses: actions/upload-artifact@v4
+      with:
+        name: a86-prebuilt-linux-x86_64
+        path: a86/native/prebuilt/unix/x86_64/liba86_jit.so
+        if-no-files-found: error
+
+    - name: Create pull request for updated shared object
+      uses: peter-evans/create-pull-request@v8
+      with:
+        branch: update-prebuilt-linux-x86_64
+        delete-branch: true
+        commit-message: Update Linux x86_64 prebuilt JIT library
+        title: Update Linux x86_64 prebuilt JIT library
+        body: |
+          Rebuilds `a86/native/prebuilt/unix/x86_64/liba86_jit.so`
+          using the `Build Prebuilt Linux Binary` workflow on GitHub Actions.
+        add-paths: |
+          a86/native/prebuilt/unix/x86_64/liba86_jit.so

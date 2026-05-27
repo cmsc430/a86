@@ -1,328 +1,307 @@
 #lang racket
-(provide/contract
- [current-objs  (parameter/c (listof path-string?))]
- [asm-interp    ;(-> (listof instruction?) any/c)
-  (->* () #:rest (or/c (listof instruction?)
-                       (listof (listof instruction?)))
-       any/c)]
- [asm-interp/io (-> (listof instruction?) string? any/c)])
 
-(define-logger a86)
+(provide
+ (contract-out
+  [struct extern
+    ([name symbol?]
+     [value extern-value?]
+     [ctype ctype?])]
+  [current-jit (parameter/c jit?)]
+  [current-externs (parameter/c extern-list/c)]
+  [current-objects (parameter/c (listof path-string?))]
+  [reset-jit! (-> void?)]
+  [asm-load
+   (->* ((listof instruction?))
+        (#:externs (listof extern?)
+         #:objects (listof path-string?)
+         #:jit (or/c #f jit?))
+        asm-program?)]
+  [asm-call
+   (->* (asm-program? symbol?)
+        ()
+        #:rest (listof machine-word?)
+        integer?)]
+  [asm-unload
+   (-> asm-program? void?)]
+  [call-with-asm-loaded
+   (->* ((listof instruction?) (-> asm-program? any/c))
+        (#:externs (listof extern?)
+         #:objects (listof path-string?)
+         #:jit (or/c #f jit?))
+        any/c)]
+  [asm-interp
+   (->* () #:rest (or/c (listof instruction?) (listof (listof instruction?))) any/c)]
 
-(require "printer.rkt" "ast.rkt" "callback.rkt" "check-assembler.rkt"
-         (rename-in ffi/unsafe [-> _->]))
-(require (submod "printer.rkt" private))
+  [asm-interp/io
+   (->* () #:rest (or/c (*list/c instruction? string?) (*list/c (listof instruction?) string?)) any/c)]))
 
-;; Check clang availability when required to fail fast.
-(check-clang-available)
 
-;; Bail out if we're not on an x86_64 Racket.
-(unless (eq? 'x86_64 (system-type 'arch))
-  (error 'a86
-         "This library requires x86_64 Racket, but yours is ~a (~a)."
-         (system-type 'arch)
-         (system-type 'os)))
+(require (except-in ffi/unsafe ->)
+         "ast.rkt"
+         "jit.rkt"
+         "printer.rkt"
+         (submod "printer.rkt" private))
 
-(define *debug*?
-  (let ((r (getenv "PLTSTDERR")))
-    (and r
-         (string=? r "info@a86"))))
+(define extern-list/c
+  (flat-named-contract
+   'extern-list/c
+   (λ (xs)
+     (and (list? xs)
+          (andmap extern? xs)
+          (not (check-duplicates xs #:key extern-name))))))
 
-;; Assembly code is linked with object files in this parameter
-(define current-objs
+(define (extern-value? x)
+  (or (procedure? x) (cpointer? x)))
+
+(define (jit? x)
+  #t) ; FIXME
+
+(define (machine-word? x)
+  (or (exact-integer? x) (cpointer? x)))
+
+(define A86_EXTERN_FUNCTION 0)
+(define A86_EXTERN_GLOBAL   1)
+
+(define (jit-trace-enabled?)
+  (define v (getenv "A86_JIT_TRACE"))
+  (and v (not (member v '("" "0" "false" "FALSE" "False")))))
+
+(define (jit-trace fmt . args)
+  (when (jit-trace-enabled?)
+    (parameterize ([current-output-port (current-error-port)])
+      (apply printf (string-append "a86-jit: " fmt "\n") args)
+      (flush-output))))
+
+(define (trace-extern-procedure name proc)
+  (if (not (jit-trace-enabled?))
+      proc
+      (lambda args
+        (jit-trace "extern ~a args=~s" name args)
+        (with-handlers ([exn:fail?
+                         (lambda (e)
+                           (jit-trace "extern ~a raised: ~a"
+                                      name
+                                      (exn-message e))
+                           (raise e))])
+          (define vs
+            (call-with-values
+             (lambda () (apply proc args))
+             list))
+          (jit-trace "extern ~a result=~s" name vs)
+          (apply values vs)))))
+
+;; ------------------------------------------------------------
+;; current JIT environment
+
+(define current-jit
+  (make-parameter (make-jit)))
+
+(define current-externs
   (make-parameter '()))
 
-;; Asm ... -> Value
-;; Interpret (by assemblying, linking, and loading) x86-64 code
-;; Assume: entry point is "entry"
-(define (asm-interp . is)
-  (asm-interp/io is #f))
+(define jit-no-unload?
+  (let ([v (getenv "A86_JIT_NO_UNLOAD")])
+    (and v (not (member (string-downcase v) '("0" "false" "no" ""))))))
 
-(define fopen
-  (get-ffi-obj "fopen" (ffi-lib #f) (_fun _path _string/utf-8 _-> _pointer)))
+(define current-objects
+  (make-parameter '()))
 
-(define fflush
-  (get-ffi-obj "fflush" (ffi-lib #f) (_fun _pointer _-> _void)))
+(define (reset-jit!)
+  (define old (current-jit))
+  (when old
+    (jit-close old))
+  (current-jit (make-jit)))
 
-(define fclose
-  (get-ffi-obj "fclose" (ffi-lib #f) (_fun _pointer _-> _void)))
+;; ------------------------------------------------------------
+;; higher-level extern representations
 
-;; WARNING: The heap is re-used, so make sure you're done with it
-;; before calling asm-interp again
-(define *heap*
-  ; IMPROVE ME: hard-coded heap size
-  (malloc _int64 20000 'raw))
+(struct extern (name value ctype) #:transparent)
+
+(struct cached-callback (name ctype wrapper fptr) #:transparent)
+
+;; ------------------------------------------------------------
+;; loaded program wrapper
+;;
+;; `ptr` is the raw native program handle.
+;; `keepalive` holds any callback pointers so they are not GC'd
+;; while the program is live.
+;; `jit` is the owning JIT when the program was loaded into an isolated
+;; one-shot JIT. `owned?` controls whether unload should close that JIT.
+
+(struct asm-program (ptr keepalive jit owned?) #:transparent #:mutable)
+
+;; ------------------------------------------------------------
+;; helpers
+
+(define (program->asm-string p)
+  (with-output-to-string
+    (λ ()
+      (parameterize ([current-shared? #t])
+        (asm-display p)))))
+
+(define (resolve-object-path p)
+  (define path
+    (cond
+      [(path? p) p]
+      [(string? p) (string->path p)]))
+  (path->string
+   (simplify-path
+    (path->complete-path path (current-directory)))))
+
+;; Hold callback trampolines for the life of the process so long-running test
+;; runs do not depend on per-load callback allocation or GC timing.
+(define callback-cache (make-hasheq))
+
+(define (cached-function-ptr name value ctype)
+  (define entries (hash-ref callback-cache value '()))
+  (define hit
+    (for/or ([entry entries])
+      (and (eq? name (cached-callback-name entry))
+           (equal? ctype (cached-callback-ctype entry))
+           entry)))
+  (cond
+    [hit
+     (cached-callback-fptr hit)]
+    [else
+     (define wrapper (trace-extern-procedure name value))
+     (define fptr (function-ptr wrapper ctype))
+     (hash-set! callback-cache
+                value
+                (cons (cached-callback name ctype wrapper fptr) entries))
+     fptr]))
+
+(define (prepare-externs externs)
+  (define keepalive '())
+  (define bindings
+    (for/vector ([x externs])
+      (match-define (extern name value ctype) x)
+      (cond
+        [(procedure? value)
+         (define fptr (cached-function-ptr name value ctype))
+         (set! keepalive (cons fptr keepalive))
+         (make-jit-extern-binding
+          (symbol->string name)
+          A86_EXTERN_FUNCTION
+          fptr)]
+
+        [(cpointer? value)
+         (make-jit-extern-binding
+          (symbol->string name)
+          A86_EXTERN_GLOBAL
+          value)])))
+
+  (values bindings keepalive))
+
+(define (prepare-object-files objs)
+  (for/vector ([p objs])
+    (resolve-object-path p)))
+
+(define (arg->u64 x)
+  (cond
+    [(exact-integer? x)
+     ;; jit.rkt passes _uint64 arguments, so normalize negatives mod 2^64
+     (modulo x (arithmetic-shift 1 64))]
+    [(cpointer? x)
+     (cast x _pointer _uintptr)]))
+
+;; ------------------------------------------------------------
+;; public API
+
+(define (asm-load prog
+                  #:externs [externs (current-externs)]
+                  #:objects [objs (current-objects)]
+                  #:jit [jit #f])
+  (define owned? (not jit))
+  (define use-jit (or jit (make-jit)))
+  (define asm-str (program->asm-string prog))
+  (define-values (ext-vec keepalive) (prepare-externs externs))
+  (define obj-vec (prepare-object-files objs))
+  (jit-trace "load externs=~s objects=~s"
+             (map extern-name externs)
+             objs)
+  (define p (jit-load use-jit asm-str obj-vec ext-vec))
+  (asm-program p keepalive use-jit owned?))
+
+(define (asm-call p label . args)
+  (define raw (asm-program-ptr p))
+  (unless raw
+    (error 'asm-call "program has already been unloaded"))
+  (define argv
+    (list->vector (map arg->u64 args)))
+  (with-handlers ([exn:fail?
+                   (λ (e)
+                     (jit-trace "call label=~s args=~s failed: ~a"
+                                label
+                                args
+                                (exn-message e))
+                     (raise e))])
+    (jit-call (asm-program-ptr p) label argv)))
+
+(define (asm-unload p)
+  (define raw (asm-program-ptr p))
+  (when raw
+    (define maybe-jit (asm-program-jit p))
+    (define owned? (asm-program-owned? p))
+    (if jit-no-unload?
+        (jit-trace "skip unload due to A86_JIT_NO_UNLOAD")
+        (begin
+          (if (and owned? maybe-jit)
+              ;; For the default one-program JIT path, avoid explicitly
+              ;; removing ORC resources before tearing down the whole JIT.
+              (jit-close maybe-jit)
+              (jit-unload raw))
+          (set-asm-program-ptr! p #f)
+          (set-asm-program-jit! p #f)))))
+
+(define (call-with-asm-loaded prog f
+                              #:externs [externs (current-externs)]
+                              #:objects [objs (current-objects)]
+                              #:jit [jit #f])
+  (define p (asm-load prog
+                      #:externs externs
+                      #:objects objs
+                      #:jit jit))
+  (dynamic-wind
+    void
+    (λ () (f p))
+    (λ () (asm-unload p))))
+
+(define (asm-interp . asm)
+  (define-values (init-label code) (asm-fixup asm))
+  (call-with-asm-loaded code
+                        (λ (p) (asm-call p init-label))))
+
+(define (asm-interp/io . asm+in)
+  (match asm+in
+    [(list asm ... in-str)
+     (define in (open-input-string in-str))
+     (define out (open-output-string))
+     (parameterize ([current-input-port in]
+                    [current-output-port out])
+       (define r (apply asm-interp asm))
+       (begin0 (cons r (get-output-string out))
+         (close-output-port out)
+         (close-input-port in)))]))
 
 
-;; Integer64 -> String
-(define (int64->binary-string n)
-  (format "#b~a"
-          (~r n #:base 2 #:min-width 64 #:pad-string "0")))
-
-;; Integer64 -> String
-(define (int64->octal-string n)
-  (format "#o~a"
-          (~r n #:base 8 #:min-width 22 #:pad-string "0")))
-
-;; Integer64
-(define (int64->hex-string n)
-  (format "#x~a"
-          (~r n #:base 16 #:min-width 16 #:pad-string "0")))
-
-(define (show-state . regs)
-  (format "\n~a"
-          (map (lambda (r v)
-                 (format "(~a ~a)" r (int64->hex-string v)))
-               '(rax rbx rcx rdx rbp rsp rsi rdi
-                     r8 r9 r10 r11 r12 r13 r14 r15 instr flags)
-               regs)))
-
-;; Asm ... String -> (cons Value String)
-;; Like asm-interp, but uses given string for input and returns
-;; result with string output
-(define (asm-interp/io a input)
-
-  (log-a86-info (~v a))
-
-  (define t.s   (make-temporary-file "clang-~a.s"))
-  (define t.o   (path-replace-extension t.s #".o"))
-  (define t.so  (path-replace-extension t.s #".so"))
-  (define t.in  (path-replace-extension t.s #".in"))
-  (define t.out (path-replace-extension t.s #".out"))
-
-  ;; If the initial label is declared global, jump to that, otherwise
-  ;; generate an initial label at first instruction and jump there
-
+;; (listof (or/c instruction? (listof instruction?))) -> (listof instruction?)
+(define (asm-fixup asm)
+  (define a (apply seq asm))
   (define init-label
     (match (findf Label? a)
       [(Label ($ l)) l]
       [_ #f]))
-
   (define global?
     (and init-label
          (ormap (match-lambda
-                  [(Global g) (eq? g init-label)]
+                  [(Global ($ g)) (eq? g init-label)]
                   [_ #f])
                 a)))
-
-  (define a*
-    (cond
-      [(and init-label global?) (apply prog a)]
-      [else (let ((i (symbol->label (gensym 'init))))
-              (set! init-label i)
-              (apply prog
-                     (Global i)
-                     (Label i)
-                     a))]))
-
-  (with-output-to-file t.s
-    #:exists 'truncate
-    (λ ()
-      (parameterize ((current-shared? #t))
-        (asm-display (if *debug*?
-                         (debug-transform a*)
-                         a*)))))
-
-  (clang t.s t.o)
-  (ld t.o t.so)
-
-  (define libt.so (ffi-lib t.so))
-
-
-  (define entry
-    (get-ffi-obj init-label libt.so (_fun _pointer _-> _int64)))
-
-  ;; install our own `error_handler` procedure to prevent `exit` calls
-  ;; from interpreted code bringing down the parent process.  All of
-  ;; these hooks into the runtime need a better API and documentation,
-  ;; but this is a rough hack to make Extort work for now.
-  (when (ffi-obj-ref "error_handler" libt.so (thunk #f))
-    (set-ffi-obj! "error_handler" libt.so _pointer
-                  (function-ptr (λ () (raise 'err)) (_fun _-> _void))))
-
-  (when *debug*?
-    (define log (ffi-obj-ref log-label libt.so (thunk #f)))
-    (when log
-      (set-ffi-obj! log-label libt.so _pointer
-                    (function-ptr
-                     (λ () (log-a86-info
-                            (apply show-state
-                                   (build-list 18 (lambda (i) (ptr-ref log _int64 (add1 i)))))))
-                     (_fun _-> _void)))))
-
-  (define has-heap? #f)
-
-  (when (ffi-obj-ref "heap" libt.so (thunk #f))
-    (set! has-heap? #t)
-
-    ;; This is a GC-enabled run-time so set from, to, and types space
-    (when (ffi-obj-ref "from" libt.so (thunk #f))
-      ;; FIXME: leaks types memory
-      (set-ffi-obj! "from" libt.so _pointer *heap*)
-      (set-ffi-obj! "to" libt.so _pointer (ptr-add *heap* 10000 _int64))
-      (set-ffi-obj! "types" libt.so _pointer (malloc _int32 10000))))
-
-  (delete-file t.s)
-  (delete-file t.o)
-  (delete-file t.so)
-  (if input
-      (let ()
-        (unless (and (ffi-obj-ref "in" libt.so (thunk #f))
-                     (ffi-obj-ref "out" libt.so (thunk #f)))
-          (error "asm-interp/io: running in IO mode without IO linkage"))
-
-        (with-output-to-file t.in #:exists 'truncate
-          (thunk (display input)))
-
-        (define current-in
-          (make-c-parameter "in" libt.so _pointer))
-        (define current-out
-          (make-c-parameter "out" libt.so _pointer))
-
-        (current-in  (fopen t.in "r"))
-        (current-out (fopen t.out "w"))
-
-        (define result
-          (with-handlers ((symbol? identity))
-            (guard-foreign-escape
-             (entry *heap*))))
-
-        (fflush (current-out))
-        (fclose (current-in))
-        (fclose (current-out))
-
-        (define output (file->string t.out))
-        (delete-file t.in)
-        (delete-file t.out)
-        (cons result output))
-
-      (with-handlers ((symbol? identity))
-        (guard-foreign-escape
-         (entry *heap*)))))
-
-
-(define (string-splice xs)
-  (apply string-append
-         (add-between (map (lambda (s) (string-append "\"" s "\"")) xs)
-                      " ")))
-
-;;; Utilities for calling clang and linker with informative error messages
-
-(struct exn:clang exn:fail:user ())
-(define assembly-error-msg
-  (string-append
-   "assembly error: make sure to use `prog` to construct an assembly program\n"
-   "if you did and still get this error; please share with course staff."))
-
-(define (clang:error msg)
-  (raise (exn:clang (format "~a\n\n~a" assembly-error-msg msg)
-                    (current-continuation-marks))))
-
-;; run clang on t.s to create t.o
-(define (clang t.s t.o)
-  (define err-port (open-output-string))
-  (define fmt (if (eq? (system-type 'os) 'macosx) 'macho64 'elf64))
-  (define prefix
-    (if (eq? (system-type 'os) 'macosx)
-        "arch -x86_64"
-        ""))
-
-  (unless (parameterize ((current-error-port err-port))
-            (system (format "~a clang -c ~a -o ~a" prefix t.s t.o)))
-    (clang:error (get-output-string err-port))))
-
-(struct exn:ld exn:fail:user ())
-(define (ld:error msg)
-  (raise (exn:ld (format "link error: ~a" msg)
-                 (current-continuation-marks))))
-
-(define (ld:undef-symbol s)
-  (ld:error
-   (string-append
-    (format "symbol ~a not defined in linked objects: ~a\n" s (current-objs))
-    "use `current-objs` to link in object containing symbol definition.")))
-
-;; link together t.o with current-objs to create shared t.so
-(define (ld t.o t.so)
-  (define err-port (open-output-string))
-  (define objs (string-splice (current-objs)))
-  (define -z-defs-maybe
-    (if (eq? (system-type 'os) 'macosx)
-        ""
-        "-z defs "))
-  (unless (parameterize ((current-error-port err-port))
-            (system (format "gcc ~a-v -shared ~a ~a -o ~a"
-                            -z-defs-maybe
-                            t.o objs t.so)))
-    (define err-msg
-      (get-output-string err-port))
-    (match (or (regexp-match #rx"Undefined.*\"(.*)\"" err-msg)            ; mac
-               (regexp-match #rx"undefined reference to `(.*)'" err-msg)) ; linux
-      [(list _ symbol) (ld:undef-symbol symbol)]
-      [_ (ld:error (format "unknown link error.\n\n~a" err-msg))])))
-
-
-
-;; Debugging facilities
-
-(define log-label (symbol->label (gensym 'log)))
-
-(define (Log i)
-  (seq (save-registers)
-       (Pushf)
-       (Mov 'rax i)
-       (Mov (Mem log-label (* 8 17)) 'rax)
-       (Mov 'rax (Mem 'rsp 0))
-       (Mov (Mem log-label (* 8 18)) 'rax)
-       (Call (Mem log-label))
-       (Popf)
-       (restore-registers)))
-
-(define (instrument is)
-  (for/fold ([ls '()]
-             #:result (reverse ls))
-            ([idx (in-naturals)]
-             [ins (in-list is)])
-    (if (serious-instruction? ins)
-        (seq ins (reverse (Log idx)) ls)
-        (seq ins ls))))
-
-(define (serious-instruction? ins)
-  (match ins
-    [(Label _) #f]
-    [(Global _) #f]
-    [(? Comment?) #f]
-    [_ #t]))
-
-(define (debug-transform is)
-  (seq (instrument is)
-          ;; End of user program
-          (Data)
-          (Global log-label)
-          (Label log-label)
-          (Dq 0) ; callback placeholder
-          (static-alloc-registers)
-          (Dq 0) ; index of instruction
-          (Dq 0) ; flags
-          ))
-
-(define registers
-  '(rax rbx rcx rdx rbp rsp rsi rdi
-        r8 r9 r10 r11 r12 r13 r14 r15))
-
-(define (static-alloc-registers)
-  (apply seq
-         (map (λ (r) (seq (Dq 0) (% (~a r))))
-              registers)))
-
-(define (save-registers)
-  (apply seq
-         (map (λ (r i) (seq (Mov (Mem log-label (* 8 i)) r)))
-              registers
-              (build-list (length registers) add1))))
-
-(define (restore-registers)
-  (apply seq
-         (map (λ (r i) (seq (Mov r (Mem log-label (* 8 i)))))
-              registers
-              (build-list (length registers) add1))))
+  (cond
+    [(and init-label global?) (values init-label (apply prog a))]
+    [else (let ((i (symbol->label (gensym 'init))))
+            (values i
+                    (apply prog
+                           (Global i)
+                           (Label i)
+                           a)))]))

@@ -4,11 +4,15 @@
  [asm-string  (-> (listof instruction?) string?)] ; deprecated
  [asm-display (-> (listof instruction?) any)])
 
+(define current-os
+  (make-parameter (system-type 'os)))
+
 (define current-shared?
   (make-parameter #f))
 
 (module* private #f
-  (provide current-shared?))
+  (provide current-shared?)
+  (provide current-os))
 
 ;; Asm -> String
 (define (asm-string a)
@@ -26,14 +30,12 @@
 
 ;; Label -> String
 ;; prefix with _ for Mac
-(define label-symbol->string
-  (match (system-type 'os)
+(define (label-symbol->string s)
+  (match (current-os)
     ['macosx
-     (λ (s)
-       (string-append "_" (symbol->string s)))]
+     (string-append "\"_" (symbol->string s) "\"")]
     [_
-     (λ (s)
-       (symbol->string s))]))
+     (string-append "\"" (symbol->string s) "\"")]))
 
        ;(if (and (current-shared?) (memq s (current-extern-labels)))
            ; hack for ELF64 shared libraries in service of
@@ -41,14 +43,7 @@
            ;(string-append "$" (symbol->string s) " wrt ..plt")
            ;(symbol->string s)))]))
 
-(define extern-label-decl-symbol->string
-  (match (system-type 'os)
-    ['macosx
-     (λ (s)
-       (string-append "_" (symbol->string s)))]
-    [_
-     (λ (s)
-       (symbol->string s))]))
+(define extern-label-decl-symbol->string label-symbol->string)
 
 ;; Instruction -> String
 (define (common-instruction->string i)
@@ -187,12 +182,12 @@
      (string-append "(" (exp->string e1) " " (symbol->string o) " " (exp->string e2) ")")]))
 
 (define (text-section n)
-  (match (system-type 'os)
-    ['macosx (format ".section __TEXT,~a\n\t.p2align 4" n)]
+  (match (current-os)
+    ['macosx (format ".section __TEXT,~a" n)]
     [_       (format ".section ~a,\"ax\",@progbits\n\t.p2align 4" n)]))
 
 (define (data-section n)
-  (match (system-type 'os)
+  (match (current-os)
     ['macosx (format ".section __DATA,~a\n\t.p2align 3" n)]
     [_       (format ".section ~a,\"aw\",@progbits\n\t.p2align 3" n)]))
 
@@ -207,7 +202,7 @@
     [(Global ($ l)) (string-append tab ".global " (label-symbol->string l))]
     [(Label ($ l))  (string-append (label-symbol->string l) ":")]
     [(Align n)
-     (match (system-type 'os)
+     (match (current-os)
        ['macosx (string-append ".p2align "
                                (number->string
                                 (let loop ([i 0] [n n])
