@@ -266,8 +266,13 @@
     (λ () (f p))
     (λ () (asm-unload p))))
 
+;; DOES NOT UNLOAD
 (define (asm-interp . asm)
   (define-values (init-label code) (asm-fixup asm))
+  (define p
+    (asm-load code))
+  (asm-call p init-label)
+  #;
   (call-with-asm-loaded code
                         (λ (p) (asm-call p init-label))))
 
